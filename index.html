@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fcfaf8">
+  <title>My Accountant - Mobile Friendly</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <style>
+    *{font-family: Inter, system-ui, sans-serif}
+    .serif{font-family: Fraunces, serif}
+    .mono{font-family: JetBrains Mono, monospace}
+    *::-webkit-scrollbar{width:5px;height:5px}
+    *::-webkit-scrollbar-thumb{background:#e4e4e7;border-radius:10px}
+    html{-webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%;}
+    body{touch-action: manipulation; overscroll-behavior-y: none;}
+    .scrollbar-none::-webkit-scrollbar{display:none}
+    .scrollbar-none{-ms-overflow-style:none; scrollbar-width:none}
+    @keyframes slideDown{from{transform:translate(-50%,-16px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+    @keyframes slideUp{from{transform:translateY(16px);opacity:0}to{transform:translateY(0);opacity:1}}
+    @keyframes scaleIn{from{transform:scale(0.96);opacity:0}to{transform:scale(1);opacity:1}}
+    .toast-anim{animation:slideDown 0.35s cubic-bezier(0.16,1,0.3,1)}
+    .modal-anim{animation:scaleIn 0.25s cubic-bezier(0.16,1,0.3,1)}
+    .bottom-sheet-anim{animation:slideUp 0.35s cubic-bezier(0.16,1,0.3,1)}
+  </style>
+</head>
+<body class="bg-[#fcfaf8] text-zinc-900 antialiased selection:bg-zinc-900 selection:text-white">
+  <div id="root"></div>
+  <script type="importmap">
+  {"imports":{"react":"https://esm.sh/react@18.3.1","react-dom/client":"https://esm.sh/react-dom@18.3.1/client"}}
+  </script>
+  <script type="module">
+  import React, {useState, useEffect, useMemo, useRef} from 'react';
+  import {createRoot} from 'react-dom/client';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBsFJQV30HLAZRd2OCzNmcYk_RyxxF2rb8",
+    authDomain: "my-accountant-c8a30.firebaseapp.com",
+    projectId: "my-accountant-c8a30",
+    storageBucket: "my-accountant-c8a30.firebasestorage.app",
+    messagingSenderId: "318335026866",
+    appId: "1:318335026866:web:5481712c8b5e2ddf9f2bab"
+  };
+  const DEFAULT_EXP = ["Food","Transport","Shopping","Bills","Health","Entertainment","Rent","Other"];
+  const DEFAULT_INC = ["Salary","Freelance","Business","Investment","Other"];
+  const STORAGE_KEY = "pocket_ledger_final";
+  const LIMIT_KEY = "expense_limit_v2";
+  const INCOME_GOAL_KEY = "income_goal_v2";
+  const CAT_KEY = "custom_categories_v3";
+
+  const CAT_ICON = {
+    Food:"🍜", Transport:"🚕", Shopping:"🛍️", Bills:"🧾", Health:"🏥", Entertainment:"🎬", Rent:"🏠", Other:"•",
+    Salary:"💼", Freelance:"🚀", Business:"📈", Investment:"💹"
+  };
+
+  function App(){
+    const [txs, setTxs] = useState([]);
+    const [sync, setSync] = useState("syncing");
+    const [search, setSearch] = useState("");
+    const [filterType, setFilterType] = useState("all");
+    const [filterMonth, setFilterMonth] = useState("all");
+    const [isOpen, setIsOpen] = useState(false);
+    const [editing, setEditing] = useState(null);
+    const [form, setForm] = useState({amount:"", type:"expense", category:"Food", date:new Date().toISOString().slice(0,10), note:""});
+    const [limit, setLimit] = useState(()=>{ try{return Number(localStorage.getItem(LIMIT_KEY))||0}catch{return 0}});
+    const [showLimit, setShowLimit] = useState(false);
+    const [limitInput, setLimitInput] = useState(limit);
+    const [incomeGoal, setIncomeGoal] = useState(()=>{ try{return Number(localStorage.getItem(INCOME_GOAL_KEY))||0}catch{return 0}});
+    const [showIncomeGoal, setShowIncomeGoal] = useState(false);
+    const [incomeGoalInput, setIncomeGoalInput] = useState(incomeGoal);
+    const [toast, setToast] = useState(null);
+    const [showMoreMenu, setShowMoreMenu] = useState(false);
+    
+    const [incomeCats, setIncomeCats] = useState(()=>{
+      try{
+        const raw=localStorage.getItem(CAT_KEY);
+        if(raw){ const p=JSON.parse(raw); if(p.income && Array.isArray(p.income) && p.income.length) return p.income; }
+      }catch{}
+      return DEFAULT_INC;
+    });
+    const [expenseCats, setExpenseCats] = useState(()=>{
+      try{
+        const raw=localStorage.getItem(CAT_KEY);
+        if(raw){ const p=JSON.parse(raw); if(p.expense && Array.isArray(p.expense) && p.expense.length) return p.expense; }
+      }catch{}
+      return DEFAULT_EXP;
+    });
+    const [showCatManager, setShowCatManager] = useState(false);
+    const [catTab, setCatTab] = useState("income");
+    const [newCatName, setNewCatName] = useState("");
+    
+    const fbRef = useRef(null);
+    const unsubRef = useRef(null);
+
+    const showToast = (msg,type="info")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),3800); };
+
+    useEffect(()=>{ try{ const r=localStorage.getItem(STORAGE_KEY); if(r){ const p=JSON.parse(r); if(Array.isArray(p)&&p.length) setTxs(p); } }catch{} },[]);
+    useEffect(()=>{ localStorage.setItem(LIMIT_KEY, String(limit)); setLimitInput(limit); },[limit]);
+    useEffect(()=>{ localStorage.setItem(INCOME_GOAL_KEY, String(incomeGoal)); setIncomeGoalInput(incomeGoal); },[incomeGoal]);
+    useEffect(()=>{
+      try{ localStorage.setItem(CAT_KEY, JSON.stringify({income:incomeCats, expense:expenseCats})); }catch{}
+    },[incomeCats, expenseCats]);
+
+    useEffect(()=>{
+      let cancelled=false;
+      (async()=>{
+        try{
+          if(window.location.protocol==="file:" || !navigator.onLine){ setSync("offline"); return; }
+          setSync("syncing");
+          const {initializeApp}=await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+          const {getAuth, signInAnonymously}=await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js");
+          const {getFirestore, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, query, orderBy}=await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+          if(cancelled) return;
+          const app=initializeApp(firebaseConfig);
+          const auth=getAuth(app);
+          try{ await signInAnonymously(auth);}catch{}
+          const db=getFirestore(app);
+          fbRef.current={db, collection, addDoc, updateDoc, deleteDoc, doc, serverTimestamp};
+          const col=collection(db,"transactions");
+          const q=query(col,orderBy("date","desc"));
+          const unsub=onSnapshot(q,(snap)=>{
+            if(cancelled) return;
+            const data=snap.docs.map(d=>{ const v=d.data(); return {id:d.id, amount:Number(v.amount)||0, type:v.type||"expense", category:v.category||"Other", date:v.date||new Date().toISOString().slice(0,10), note:v.note||""}; });
+            data.sort((a,b)=> b.date>a.date?1:-1);
+            setTxs(data); setSync("synced");
+            try{localStorage.setItem(STORAGE_KEY, JSON.stringify(data));}catch{}
+          },()=>{ if(!cancelled) setSync("offline"); });
+          unsubRef.current=unsub;
+        }catch{ if(!cancelled) setSync("offline"); }
+      })();
+      return ()=>{ cancelled=true; if(unsubRef.current) unsubRef.current(); };
+    },[]);
+
+    useEffect(()=>{ if(sync==="offline"||!fbRef.current){ try{localStorage.setItem(STORAGE_KEY, JSON.stringify(txs));}catch{} } },[txs,sync]);
+
+    const totals = useMemo(()=>{
+      const inc=txs.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+      const exp=txs.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+      return {inc,exp,bal:inc-exp, rate: inc>0?(inc-exp)/inc*100:0};
+    },[txs]);
+    const progress = limit>0 ? (totals.exp/limit)*100 : 0;
+    const remaining = limit - totals.exp;
+    const incomeProgress = incomeGoal>0 ? (totals.inc/incomeGoal)*100 : 0;
+    const incomeRemaining = incomeGoal - totals.inc;
+
+    const chart = useMemo(()=>{
+      const arr=[]; const now=new Date();
+      for(let i=5;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; const label=d.toLocaleString("en-US",{month:"short"}); arr.push({key,label,inc:0,exp:0}); }
+      txs.forEach(t=>{ const f=arr.find(a=>a.key===t.date.slice(0,7)); if(f){ if(t.type==="income") f.inc+=t.amount; else f.exp+=t.amount; } });
+      return arr;
+    },[txs]);
+    const maxChart = Math.max(1, ...chart.map(d=>Math.max(d.inc,d.exp)));
+
+    const byCat = useMemo(()=>{
+      const m={}; txs.filter(t=>t.type==="expense").forEach(t=>{ m[t.category]=(m[t.category]||0)+t.amount; });
+      const tot=Object.values(m).reduce((s,v)=>s+v,0);
+      return Object.entries(m).map(([cat,amt])=>({cat,amt,pct:tot?amt/tot*100:0})).sort((a,b)=>b.amt-a.amt);
+    },[txs]);
+
+    const months = useMemo(()=> Array.from(new Set(txs.map(t=>t.date.slice(0,7)))).sort().reverse(), [txs]);
+
+    const filtered = useMemo(()=> txs.filter(t=>{
+      if(filterType!=="all" && t.type!==filterType) return false;
+      if(filterMonth!=="all" && !t.date.startsWith(filterMonth)) return false;
+      if(search){ const s=search.toLowerCase(); return t.note.toLowerCase().includes(s)||t.category.toLowerCase().includes(s)||String(t.amount).includes(s)||t.date.includes(s); }
+      return true;
+    }),[txs,filterType,filterMonth,search]);
+
+    const prevExp = useRef(totals.exp);
+    useEffect(()=>{
+      if(limit>0){
+        if(prevExp.current < limit && totals.exp >= limit) showToast(`Limit reached! Rs ${totals.exp.toLocaleString()} of Rs ${limit.toLocaleString()}`, "error");
+        else if(prevExp.current < limit*0.8 && totals.exp >= limit*0.8 && totals.exp < limit) showToast(`80% budget used: Rs ${totals.exp.toLocaleString()} / Rs ${limit.toLocaleString()}`, "warning");
+      }
+      prevExp.current=totals.exp;
+    },[totals.exp, limit]);
+
+    const prevInc = useRef(totals.inc);
+    useEffect(()=>{
+      if(incomeGoal>0){
+        if(prevInc.current < incomeGoal && totals.inc >= incomeGoal) showToast(`Income goal achieved! Rs ${totals.inc.toLocaleString()} 🎉`, "success");
+        else if(prevInc.current < incomeGoal*0.8 && totals.inc >= incomeGoal*0.8 && totals.inc < incomeGoal) showToast(`80% income goal: Rs ${totals.inc.toLocaleString()} / Rs ${incomeGoal.toLocaleString()}`, "success");
+      }
+      prevInc.current=totals.inc;
+    },[totals.inc, incomeGoal]);
+
+    const openAdd = ()=>{ setEditing(null); setForm({amount:"", type:"expense", category:expenseCats[0]||"Food", date:new Date().toISOString().slice(0,10), note:""}); setIsOpen(true); };
+    const openEdit = (t)=>{ setEditing(t); setForm({amount:t.amount, type:t.type, category:t.category, date:t.date, note:t.note}); setIsOpen(true); };
+
+    const handleSave = async()=>{
+      const amt=Number(form.amount); if(!amt||amt<=0){ alert("Enter valid amount"); return; }
+      if(form.type==="expense" && limit>0){
+        let proj=totals.exp; if(editing && editing.type==="expense") proj-=editing.amount; proj+=amt;
+        if(proj>limit){
+          showToast(`Over budget by Rs ${(proj-limit).toLocaleString()}`, "error");
+          if(!confirm(`BUDGET LIMIT EXCEEDED\n\nLimit: Rs ${limit.toLocaleString()}\nCurrent: Rs ${totals.exp.toLocaleString()}\nAfter: Rs ${proj.toLocaleString()}\nOver by: Rs ${(proj-limit).toLocaleString()}\n\nAdd anyway?`)) return;
+        }else if(proj>=limit*0.8) showToast(`${((proj/limit)*100).toFixed(0)}% of limit used`, "warning");
+      }
+      const fb=fbRef.current;
+      try{
+        if(fb && sync!=="offline"){
+          if(editing){ await fb.updateDoc(fb.doc(fb.db,"transactions",editing.id), {amount:amt, type:form.type, category:form.category, date:form.date, note:form.note}); }
+          else{ await fb.addDoc(fb.collection(fb.db,"transactions"), {amount:amt, type:form.type, category:form.category, date:form.date, note:form.note, createdAt:fb.serverTimestamp()}); }
+        }else{
+          if(editing) setTxs(p=>p.map(x=> x.id===editing.id ? {...x,...form, amount:amt}:x));
+          else setTxs(p=> [{id:Date.now().toString(), amount:amt, type:form.type, category:form.category, date:form.date, note:form.note}, ...p]);
+        }
+        setIsOpen(false); showToast(editing?"Updated":"Added","success");
+      }catch(e){ console.error(e); showToast("Saved locally","warning"); setIsOpen(false); }
+    };
+
+    const handleDelete = async(id)=>{
+      if(!confirm("Delete this transaction?")) return;
+      const fb=fbRef.current;
+      try{
+        if(fb && sync!=="offline") await fb.deleteDoc(fb.doc(fb.db,"transactions",id));
+        else setTxs(p=>p.filter(t=>t.id!==id));
+        showToast("Deleted","info");
+      }catch{ setTxs(p=>p.filter(t=>t.id!==id)); }
+    };
+
+    const exportCSV = ()=>{
+      const rows=filtered.map(t=>[t.id,t.type,t.amount,t.category,t.date,`"${t.note.replace(/"/g,'""')}"`].join(","));
+      const csv=[["id","type","amount","category","date","note"].join(","), ...rows].join("\n");
+      const b=new Blob([csv],{type:"text/csv"}); const u=URL.createObjectURL(b); const a=document.createElement("a"); a.href=u; a.download=`accountant-${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(u);
+    };
+    const exportJSON = ()=>{
+      const b=new Blob([JSON.stringify(txs,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement("a"); a.href=u; a.download=`accountant-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(u);
+    };
+    const clearAll = async()=>{
+      if(!confirm("Clear ALL transactions? Cannot be undone.")) return;
+      const fb=fbRef.current;
+      if(fb && sync!=="offline"){ for(const t of txs){ try{ await fb.deleteDoc(fb.doc(fb.db,"transactions",t.id)); }catch{} } }
+      setTxs([]); localStorage.removeItem(STORAGE_KEY); showToast("Cleared","info");
+    };
+
+    const saveLimit = ()=>{
+      const v=Number(limitInput); if(v<0){ alert("Invalid"); return; }
+      setLimit(v); setShowLimit(false); showToast(v>0?`Budget Rs ${v.toLocaleString()} set`:"Limit removed", v>0?"success":"info");
+    };
+    const saveIncomeGoal = ()=>{
+      const v=Number(incomeGoalInput); if(v<0){ alert("Invalid"); return; }
+      setIncomeGoal(v); setShowIncomeGoal(false); showToast(v>0?`Income goal Rs ${v.toLocaleString()} set`:"Income goal removed", v>0?"success":"info");
+    };
+
+    const currentCatList = catTab==="income" ? incomeCats : expenseCats;
+    const setCurrentCatList = catTab==="income" ? setIncomeCats : setExpenseCats;
+
+    const handleAddCat = ()=>{
+      const name=newCatName.trim();
+      if(!name){ showToast("Enter category name","warning"); return; }
+      if(name.length>20){ showToast("Keep name under 20 chars","warning"); return; }
+      const exists = currentCatList.some(c=>c.toLowerCase()===name.toLowerCase());
+      if(exists){ showToast("Category already exists","warning"); return; }
+      setCurrentCatList(prev=> [...prev.filter(c=>c!=="Other"), name, "Other"]);
+      setNewCatName("");
+      showToast(`${name} added to ${catTab}`,"success");
+    };
+
+    const handleDeleteCat = (catName)=>{
+      if(catName==="Other"){ showToast("Cannot delete Other","warning"); return; }
+      const usedCount = txs.filter(t=> t.category===catName && t.type===catTab).length;
+      if(usedCount>0){
+        if(!confirm(`"${catName}" is used in ${usedCount} transaction(s). Delete anyway? Those transactions will be moved to "Other".`)) return;
+        setTxs(prev=> prev.map(t=> t.category===catName && t.type===catTab ? {...t, category:"Other"} : t));
+        const fb=fbRef.current;
+        if(fb && sync!=="offline"){
+          txs.filter(t=> t.category===catName && t.type===catTab).forEach(async t=>{
+            try{ await fb.updateDoc(fb.doc(fb.db,"transactions",t.id), {category:"Other"}); }catch{}
+          });
+        }
+      } else {
+        if(!confirm(`Delete "${catName}"?`)) return;
+      }
+      setCurrentCatList(prev=> prev.filter(c=>c!==catName));
+      showToast(`${catName} deleted`,"info");
+      if(form.category===catName && form.type===catTab){
+        setForm(f=>({...f, category:"Other"}));
+      }
+    };
+
+    const handleRenameCat = (oldName)=>{
+      if(oldName==="Other"){ showToast("Cannot rename Other","warning"); return; }
+      const newName = prompt(`Rename "${oldName}" to:`, oldName);
+      if(!newName) return;
+      const trimmed=newName.trim();
+      if(!trimmed || trimmed===oldName) return;
+      if(trimmed.length>20){ showToast("Keep under 20 chars","warning"); return; }
+      const exists = currentCatList.some(c=>c.toLowerCase()===trimmed.toLowerCase());
+      if(exists){ showToast("Name already exists","warning"); return; }
+      setCurrentCatList(prev=> prev.map(c=> c===oldName ? trimmed : c));
+      const affected = txs.filter(t=> t.category===oldName && t.type===catTab).length;
+      if(affected>0){
+        setTxs(prev=> prev.map(t=> t.category===oldName && t.type===catTab ? {...t, category:trimmed} : t));
+        const fb=fbRef.current;
+        if(fb && sync!=="offline"){
+          txs.filter(t=> t.category===oldName && t.type===catTab).forEach(async t=>{
+            try{ await fb.updateDoc(fb.doc(fb.db,"transactions",t.id), {category:trimmed}); }catch{}
+          });
+        }
+        showToast(`Renamed ${affected} transaction(s) to ${trimmed}`,"success");
+      } else {
+        showToast(`Renamed to ${trimmed}`,"success");
+      }
+      if(form.category===oldName && form.type===catTab){
+        setForm(f=>({...f, category:trimmed}));
+      }
+    };
+
+    const resetCats = ()=>{
+      if(!confirm(`Reset ${catTab} categories to default?`)) return;
+      if(catTab==="income") setIncomeCats(DEFAULT_INC);
+      else setExpenseCats(DEFAULT_EXP);
+      showToast("Categories reset","info");
+    };
+
+    // ---- RENDER ----
+    return React.createElement("div", {className:"min-h-screen bg-[#fcfaf8] pb-[88px] md:pb-0"},
+      toast && React.createElement("div", {className:"fixed top-3 left-1/2 -translate-x-1/2 z-[100] toast-anim pointer-events-none w-[92%] max-w-[360px] md:w-auto"},
+        React.createElement("div", {className:`pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-[14px] shadow-[0_12px_32px_-12px_rgba(0,0,0,0.35)] text-[13px] font-medium border backdrop-blur-xl ${toast.type==="error"?"bg-zinc-900 text-white border-zinc-800":toast.type==="warning"?"bg-amber-500 text-white border-amber-600":toast.type==="success"?"bg-zinc-900 text-white border-zinc-900":"bg-white text-zinc-800 border-zinc-200"}`},
+          React.createElement("span", {className:"w-5 h-5 rounded-full bg-white/15 grid place-items-center text-[11px] shrink-0"}, toast.type==="error"?"!":toast.type==="warning"?"⚠":"✓"),
+          React.createElement("span", {className:"truncate"}, toast.msg)
+        )
+      ),
+
+      // HEADER
+      React.createElement("div", {className:"w-full border-b border-zinc-200/70 bg-white/90 backdrop-blur-xl sticky top-0 z-20"},
+        React.createElement("div", {className:"max-w-[1200px] mx-auto px-4 md:px-7 h-[60px] md:h-[68px] flex items-center justify-between gap-3"},
+          React.createElement("div", {className:"flex items-center gap-3 min-w-0"},
+            React.createElement("div", {className:"w-9 h-9 md:w-10 md:h-10 rounded-[12px] bg-zinc-900 text-white grid place-items-center shadow-[0_2px_8px_rgba(0,0,0,0.15)] shrink-0"},
+              React.createElement("span", {className:"serif font-bold text-[18px] tracking-tight"}, "₨")
+            ),
+            React.createElement("div", {className:"min-w-0"},
+              React.createElement("h1", {className:"serif text-[18px] md:text-[20px] font-bold tracking-tight leading-none truncate"}, "Accountant"),
+              React.createElement("div", {className:"flex items-center gap-1.5 mt-[2px]"},
+                React.createElement("span", {className:"text-[10px] font-bold tracking-widest uppercase text-zinc-400 hidden sm:inline"}, "Pocket Ledger"),
+                React.createElement("span", {className:`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border font-semibold ${sync==="synced"?"bg-emerald-50 border-emerald-200 text-emerald-700":sync==="syncing"?"bg-amber-50 border-amber-200 text-amber-700":"bg-zinc-100 border-zinc-200 text-zinc-600"}`},
+                  React.createElement("span", {className:`w-1.5 h-1.5 rounded-full ${sync==="synced"?"bg-emerald-500":sync==="syncing"?"bg-amber-500 animate-pulse":"bg-zinc-400"}`}),
+                  React.createElement("span", {className:"hidden sm:inline"}, sync==="synced"?"Synced":sync==="syncing"?"Syncing":"Offline"),
+                  React.createElement("span", {className:"sm:hidden"}, sync==="synced"?"●":sync==="syncing"?"…":"○")
+                )
+              )
+            )
+          ),
+          React.createElement("div", {className:"flex items-center gap-1.5 md:gap-2 shrink-0"},
+            React.createElement("div", {className:"hidden md:flex items-center gap-2"},
+              React.createElement("button", {onClick:()=>{setCatTab("income"); setShowCatManager(true);}, className:"h-9 px-3.5 rounded-full bg-white border border-zinc-200 text-[13px] font-semibold hover:border-zinc-900 hover:bg-zinc-50 flex items-center gap-1.5"},
+                "✎ Categories"
+              ),
+              React.createElement("button", {onClick:()=>{setIncomeGoalInput(incomeGoal); setShowIncomeGoal(true);}, className:`h-9 px-3.5 rounded-full text-[13px] font-semibold border transition flex items-center gap-1.5 ${incomeGoal>0 ? "bg-emerald-600 text-white border-emerald-600 shadow-sm hover:bg-emerald-700" : "bg-white border-zinc-200 text-zinc-700 hover:border-zinc-900 hover:bg-zinc-50"}`},
+                React.createElement("span", {className:"text-[14px]"}, "↗"),
+                React.createElement("span", null, incomeGoal>0 ? `Goal Rs ${incomeGoal.toLocaleString()}` : "Income goal")
+              ),
+              React.createElement("button", {onClick:()=>{setLimitInput(limit); setShowLimit(true);}, className:`h-9 px-3.5 rounded-full text-[13px] font-semibold border transition flex items-center gap-1.5 ${limit>0 ? "bg-zinc-900 text-white border-zinc-900 shadow-sm hover:bg-black" : "bg-white border-zinc-200 text-zinc-700 hover:border-zinc-900 hover:bg-zinc-50"}`},
+                React.createElement("span", {className:"text-[14px]"}, "◐"),
+                limit>0 ? `Rs ${limit.toLocaleString()}` : "Set budget"
+              )
+            ),
+            // Mobile more menu
+            React.createElement("div", {className:"relative md:hidden"},
+              React.createElement("button", {onClick:()=>setShowMoreMenu(v=>!v), className:"w-9 h-9 rounded-full bg-white border border-zinc-200 grid place-items-center text-zinc-700"}, "•••"),
+              showMoreMenu && React.createElement("div", {className:"absolute right-0 top-[44px] w-[200px] bg-white rounded-[16px] border border-zinc-200 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.2)] p-1.5 z-30 bottom-sheet-anim"},
+                React.createElement("button", {onClick:()=>{setCatTab("income"); setShowCatManager(true); setShowMoreMenu(false);}, className:"w-full h-11 px-3 rounded-[10px] text-left text-[13px] font-medium hover:bg-zinc-50 flex items-center gap-2"}, "✎ Manage categories"),
+                React.createElement("button", {onClick:()=>{setIncomeGoalInput(incomeGoal); setShowIncomeGoal(true); setShowMoreMenu(false);}, className:"w-full h-11 px-3 rounded-[10px] text-left text-[13px] font-medium hover:bg-zinc-50 flex items-center gap-2"}, `↗ ${incomeGoal>0?`Income goal Rs ${incomeGoal.toLocaleString()}`:"Set income goal"}`),
+                React.createElement("button", {onClick:()=>{setLimitInput(limit); setShowLimit(true); setShowMoreMenu(false);}, className:"w-full h-11 px-3 rounded-[10px] text-left text-[13px] font-medium hover:bg-zinc-50 flex items-center gap-2"}, `◐ ${limit>0?`Budget Rs ${limit.toLocaleString()}`:"Set budget"}`),
+                React.createElement("div", {className:"h-px bg-zinc-100 my-1"}),
+                React.createElement("button", {onClick:()=>{exportCSV(); setShowMoreMenu(false);}, className:"w-full h-11 px-3 rounded-[10px] text-left text-[13px] font-medium hover:bg-zinc-50"}, "↓ Export CSV"),
+                React.createElement("button", {onClick:()=>{exportJSON(); setShowMoreMenu(false);}, className:"w-full h-11 px-3 rounded-[10px] text-left text-[13px] font-medium hover:bg-zinc-50"}, "↓ Export JSON")
+              )
+            ),
+            React.createElement("button", {onClick:openAdd, className:"h-9 md:h-9 px-4 md:px-4 rounded-full bg-zinc-900 text-white text-[13px] font-semibold shadow-[0_2px_10px_rgba(0,0,0,0.15)] hover:bg-black active:scale-[0.98] transition-all flex items-center gap-1.5"},
+              React.createElement("span", {className:"text-[16px] leading-none"}, "+"),
+              React.createElement("span", {className:"hidden sm:inline"}, "New"),
+              React.createElement("span", {className:"sm:hidden"}, "Add")
+            )
+          )
+        )
+      ),
+
+      // MOBILE QUICK ACTIONS BAR
+      React.createElement("div", {className:"md:hidden sticky top-[60px] z-10 bg-[#fcfaf8]/90 backdrop-blur-xl border-b border-zinc-100"},
+        React.createElement("div", {className:"flex gap-2 px-4 py-2.5 overflow-x-auto scrollbar-none"},
+          React.createElement("button", {onClick:()=>{setCatTab("income"); setShowCatManager(true);}, className:"shrink-0 h-8 px-3.5 rounded-full bg-white border border-zinc-200 text-[12px] font-semibold flex items-center gap-1.5"}, "✎ Categories"),
+          React.createElement("button", {onClick:()=>{setIncomeGoalInput(incomeGoal); setShowIncomeGoal(true);}, className:`shrink-0 h-8 px-3.5 rounded-full text-[12px] font-semibold border flex items-center gap-1.5 ${incomeGoal>0?"bg-emerald-600 text-white border-emerald-600":"bg-white border-zinc-200 text-zinc-700"}`}, `↗ ${incomeGoal>0?`Goal Rs ${incomeGoal.toLocaleString()}`:"Income goal"}`),
+          React.createElement("button", {onClick:()=>{setLimitInput(limit); setShowLimit(true);}, className:`shrink-0 h-8 px-3.5 rounded-full text-[12px] font-semibold border flex items-center gap-1.5 ${limit>0?"bg-zinc-900 text-white border-zinc-900":"bg-white border-zinc-200 text-zinc-700"}`}, `◐ ${limit>0?`Budget Rs ${limit.toLocaleString()}`:"Set budget"}`),
+          React.createElement("span", {className:`shrink-0 h-8 px-3 rounded-full text-[11px] font-medium flex items-center border ${totals.bal>=0?"bg-white border-zinc-200 text-zinc-600":"bg-red-50 border-red-200 text-red-700"}`}, `Bal Rs ${totals.bal.toLocaleString()}`)
+        )
+      ),
+
+      React.createElement("main", {className:"max-w-[1200px] mx-auto px-4 md:px-7 py-4 md:py-8"},
+
+        // Banners - improved mobile
+        limit>0 && totals.exp >= limit && React.createElement("div", {className:"mb-3 md:mb-6 rounded-[14px] md:rounded-[18px] bg-zinc-900 text-white p-3.5 md:p-5 flex gap-3 items-start shadow-[0_8px_32px_-16px_rgba(0,0,0,0.4)]"},
+          React.createElement("div", {className:"w-8 h-8 md:w-9 md:h-9 rounded-full bg-white/10 grid place-items-center shrink-0 text-[14px] md:text-[16px]"}, "⚠"),
+          React.createElement("div", {className:"flex-1 min-w-0"},
+            React.createElement("div", {className:"text-[13px] md:text-[14px] font-semibold"}, "Budget exceeded"),
+            React.createElement("div", {className:"text-[12px] md:text-[13px] text-white/70 mt-1 leading-snug"}, `Spent Rs ${totals.exp.toLocaleString()} of Rs ${limit.toLocaleString()}. Over by Rs ${(totals.exp-limit).toLocaleString()}.`),
+            React.createElement("div", {className:"mt-2.5 h-1.5 bg-white/10 rounded-full overflow-hidden"},
+              React.createElement("div", {className:"h-full bg-white rounded-full", style:{width:"100%"}})
+            )
+          ),
+          React.createElement("button", {onClick:()=>{setLimitInput(limit); setShowLimit(true);}, className:"shrink-0 h-8 px-3 md:px-3.5 rounded-full bg-white text-zinc-900 text-[11px] md:text-[12px] font-semibold hover:bg-zinc-100"}, "Adjust")
+        ),
+
+        limit>0 && totals.exp >= limit*0.8 && totals.exp < limit && React.createElement("div", {className:"mb-3 md:mb-6 rounded-full bg-amber-50 border border-amber-200/70 px-3.5 py-2.5 flex items-center gap-2.5"},
+          React.createElement("div", {className:"w-6 h-6 rounded-full bg-amber-500 text-white grid place-items-center text-[12px] shrink-0"}, "!"),
+          React.createElement("div", {className:"flex-1 text-[12px] md:text-[13px] text-amber-900 truncate"},
+            React.createElement("span", {className:"font-semibold"}, `${progress.toFixed(0)}% used`),
+            React.createElement("span", {className:"opacity-70 hidden sm:inline"}, ` — Rs ${totals.exp.toLocaleString()} / Rs ${limit.toLocaleString()}`)
+          ),
+          React.createElement("div", {className:"w-16 md:w-20 h-1.5 bg-amber-100 rounded-full overflow-hidden shrink-0"},
+            React.createElement("div", {className:"h-full bg-amber-500 rounded-full", style:{width:`${progress}%`}})
+          )
+        ),
+
+        incomeGoal>0 && totals.inc >= incomeGoal && React.createElement("div", {className:"mb-3 md:mb-6 rounded-[14px] md:rounded-[18px] bg-emerald-600 text-white p-3.5 md:p-5 flex gap-3 items-start shadow-[0_8px_32px_-16px_rgba(0,0,0,0.3)]"},
+          React.createElement("div", {className:"w-8 h-8 md:w-9 md:h-9 rounded-full bg-white/15 grid place-items-center shrink-0 text-[14px] md:text-[16px]"}, "🎉"),
+          React.createElement("div", {className:"flex-1 min-w-0"},
+            React.createElement("div", {className:"text-[13px] md:text-[14px] font-semibold"}, "Income goal achieved"),
+            React.createElement("div", {className:"text-[12px] md:text-[13px] text-white/80 mt-1 leading-snug"}, `Earned Rs ${totals.inc.toLocaleString()} of Rs ${incomeGoal.toLocaleString()}. Extra Rs ${(totals.inc-incomeGoal).toLocaleString()}!`),
+            React.createElement("div", {className:"mt-2.5 h-1.5 bg-white/15 rounded-full overflow-hidden"},
+              React.createElement("div", {className:"h-full bg-white rounded-full", style:{width:"100%"}})
+            )
+          ),
+          React.createElement("button", {onClick:()=>{setIncomeGoalInput(incomeGoal); setShowIncomeGoal(true);}, className:"shrink-0 h-8 px-3 md:px-3.5 rounded-full bg-white text-emerald-700 text-[11px] md:text-[12px] font-semibold hover:bg-zinc-100"}, "Adjust")
+        ),
+
+        incomeGoal>0 && totals.inc >= incomeGoal*0.8 && totals.inc < incomeGoal && React.createElement("div", {className:"mb-3 md:mb-6 rounded-full bg-emerald-50 border border-emerald-200/70 px-3.5 py-2.5 flex items-center gap-2.5"},
+          React.createElement("div", {className:"w-6 h-6 rounded-full bg-emerald-500 text-white grid place-items-center text-[12px] shrink-0"}, "↑"),
+          React.createElement("div", {className:"flex-1 text-[12px] md:text-[13px] text-emerald-900 truncate"},
+            React.createElement("span", {className:"font-semibold"}, `${incomeProgress.toFixed(0)}% goal`),
+            React.createElement("span", {className:"opacity-70 hidden sm:inline"}, ` — Rs ${totals.inc.toLocaleString()} / Rs ${incomeGoal.toLocaleString()}`)
+          ),
+          React.createElement("div", {className:"w-16 md:w-20 h-1.5 bg-emerald-100 rounded-full overflow-hidden shrink-0"},
+            React.createElement("div", {className:"h-full bg-emerald-500 rounded-full", style:{width:`${incomeProgress}%`}})
+          )
+        ),
+
+        // STATS GRID - 2 cols mobile, 4 desktop
+        React.createElement("section", {className:"grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4"},
+          // Income
+          React.createElement("div", {className:`group rounded-[16px] md:rounded-[20px] border p-[1px] shadow-[0_2px_20px_-12px_rgba(0,0,0,0.08)] hover:shadow-[0_8px_32px_-16px_rgba(0,0,0,0.12)] transition-all ${incomeGoal>0 && totals.inc>=incomeGoal ? "bg-emerald-100 border-emerald-200" : "bg-white border-zinc-200/70"}`},
+            React.createElement("div", {className:`rounded-[15px] md:rounded-[19px] p-4 md:p-5 h-full ${incomeGoal>0 && totals.inc>=incomeGoal ? "bg-[#f0fdf4]" : "bg-white"}`, onClick:()=>{if(window.innerWidth<768){setIncomeGoalInput(incomeGoal); setShowIncomeGoal(true);}}},
+              React.createElement("div", {className:"flex items-start justify-between"},
+                React.createElement("div", {className:"w-8 h-8 md:w-9 md:h-9 rounded-[10px] bg-emerald-50 border border-emerald-100 text-emerald-600 grid place-items-center text-[14px]"}, "↗"),
+                React.createElement("button", {onClick:(e)=>{e.stopPropagation(); setIncomeGoalInput(incomeGoal); setShowIncomeGoal(true);}, className:"text-[10px] font-bold tracking-widest uppercase px-2 md:px-2.5 py-1 rounded-full bg-zinc-900 text-white hover:bg-black"}, incomeGoal>0?"Goal":"Set goal")
+              ),
+              React.createElement("div", {className:"mt-3 md:mt-4 serif text-[20px] md:text-[28px] font-bold tracking-tight leading-none truncate"}, `Rs ${totals.inc.toLocaleString()}`),
+              incomeGoal>0 ? React.createElement("div", {className:"mt-2.5 md:mt-3"},
+                React.createElement("div", {className:"flex justify-between text-[11px]"},
+                  React.createElement("span", {className:"text-zinc-500 font-medium truncate"}, `of ${incomeGoal.toLocaleString()}`),
+                  React.createElement("span", {className:`font-bold mono ml-1 ${incomeProgress>=100?"text-emerald-600":"text-zinc-900"}`}, `${incomeProgress.toFixed(0)}%`)
+                ),
+                React.createElement("div", {className:"mt-2 h-[5px] md:h-[6px] bg-zinc-100 rounded-full overflow-hidden p-0.5"},
+                  React.createElement("div", {className:`h-full rounded-full transition-all duration-500 ${incomeProgress>=100?"bg-emerald-500":"bg-zinc-900"}`, style:{width:`${Math.min(100,incomeProgress)}%`}})
+                ),
+                React.createElement("div", {className:`mt-1.5 md:mt-2 text-[11px] font-medium truncate ${incomeRemaining<=0?"text-emerald-600":"text-zinc-500"}`}, incomeRemaining>0?`${incomeRemaining.toLocaleString()} to goal`:`+${Math.abs(incomeRemaining).toLocaleString()} achieved`)
+              ) : React.createElement("div", {className:"mt-2 flex items-center gap-1.5 text-[11px] md:text-[12px] text-zinc-500"},
+                React.createElement("span", {className:"px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 font-medium"}, `${txs.filter(t=>t.type==="income").length}`),
+                React.createElement("span", {className:"truncate"}, "records")
+              )
+            )
+          ),
+          // Expense
+          React.createElement("div", {className:`group rounded-[16px] md:rounded-[20px] border p-[1px] shadow-[0_2px_20px_-12px_rgba(0,0,0,0.08)] hover:shadow-[0_8px_32px_-16px_rgba(0,0,0,0.12)] transition-all ${limit>0 && totals.exp>=limit ? "bg-red-100 border-red-200" : "bg-white border-zinc-200/70"}`},
+            React.createElement("div", {className:`rounded-[15px] md:rounded-[19px] p-4 md:p-5 h-full ${limit>0 && totals.exp>=limit ? "bg-[#fff5f5]" : "bg-white"}`, onClick:()=>{if(window.innerWidth<768){setLimitInput(limit); setShowLimit(true);}}},
+              React.createElement("div", {className:"flex items-start justify-between"},
+                React.createElement("div", {className:`w-8 h-8 md:w-9 md:h-9 rounded-[10px] border grid place-items-center text-[14px] ${limit>0 && totals.exp>=limit ? "bg-red-50 border-red-200 text-red-600" : "bg-red-50 border-red-100 text-red-600"}`}, "↘"),
+                React.createElement("button", {onClick:(e)=>{e.stopPropagation(); setLimitInput(limit); setShowLimit(true);}, className:"text-[10px] font-bold tracking-widest uppercase px-2 md:px-2.5 py-1 rounded-full bg-zinc-900 text-white hover:bg-black"}, limit>0?"Budget":"Set limit")
+              ),
+              React.createElement("div", {className:"mt-3 md:mt-4 serif text-[20px] md:text-[28px] font-bold tracking-tight leading-none truncate"}, `Rs ${totals.exp.toLocaleString()}`),
+              limit>0 ? React.createElement("div", {className:"mt-2.5 md:mt-3"},
+                React.createElement("div", {className:"flex justify-between text-[11px]"},
+                  React.createElement("span", {className:"text-zinc-500 font-medium truncate"}, `of ${limit.toLocaleString()}`),
+                  React.createElement("span", {className:`font-bold mono ml-1 ${progress>=100?"text-red-600":progress>=80?"text-amber-600":"text-zinc-900"}`}, `${progress.toFixed(0)}%`)
+                ),
+                React.createElement("div", {className:"mt-2 h-[5px] md:h-[6px] bg-zinc-100 rounded-full overflow-hidden p-0.5"},
+                  React.createElement("div", {className:`h-full rounded-full transition-all duration-500 ${progress>=100?"bg-red-500":progress>=80?"bg-amber-500":"bg-zinc-900"}`, style:{width:`${Math.min(100,progress)}%`}})
+                ),
+                React.createElement("div", {className:`mt-1.5 md:mt-2 text-[11px] font-medium truncate ${remaining>=0?"text-zinc-500":"text-red-600"}`}, remaining>=0?`${remaining.toLocaleString()} left`:`${Math.abs(remaining).toLocaleString()} over`)
+              ) : React.createElement("div", {className:"mt-2 flex items-center gap-1.5 text-[11px] md:text-[12px] text-zinc-500"},
+                React.createElement("span", {className:"px-1.5 py-0.5 rounded-full bg-zinc-100 border border-zinc-200 font-medium"}, `${txs.filter(t=>t.type==="expense").length}`),
+                React.createElement("span", {className:"truncate"}, "records")
+              )
+            )
+          ),
+          // Balance
+          React.createElement("div", {className:"group rounded-[16px] md:rounded-[20px] bg-zinc-900 p-[1px] shadow-[0_8px_24px_-12px_rgba(0,0,0,0.4)]"},
+            React.createElement("div", {className:"rounded-[15px] md:rounded-[19px] bg-zinc-900 p-4 md:p-5 h-full relative overflow-hidden"},
+              React.createElement("div", {className:"absolute -right-8 -top-8 w-24 h-24 md:w-32 md:h-32 rounded-full bg-white/[0.04]"}),
+              React.createElement("div", {className:"flex items-start justify-between relative"},
+                React.createElement("div", {className:"w-8 h-8 md:w-9 md:h-9 rounded-[10px] bg-white/10 border border-white/10 text-white grid place-items-center text-[14px]"}, "◑"),
+                React.createElement("span", {className:"text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded-full bg-white/10 border border-white/10 text-white/60"}, "Balance")
+              ),
+              React.createElement("div", {className:"mt-3 md:mt-4 serif text-[20px] md:text-[28px] font-bold tracking-tight leading-none text-white truncate"}, `Rs ${totals.bal.toLocaleString()}`),
+              React.createElement("div", {className:"mt-2 text-[11px] md:text-[12px] text-white/60 truncate"}, totals.bal>=0?"Saving well":"Over budget")
+            )
+          ),
+          // Saved Rate
+          React.createElement("div", {className:"group rounded-[16px] md:rounded-[20px] bg-white border border-zinc-200/70 p-[1px] shadow-[0_2px_20px_-12px_rgba(0,0,0,0.08)]"},
+            React.createElement("div", {className:"rounded-[15px] md:rounded-[19px] bg-white p-4 md:p-5 h-full"},
+              React.createElement("div", {className:"flex items-start justify-between"},
+                React.createElement("div", {className:"w-8 h-8 md:w-9 md:h-9 rounded-[10px] bg-zinc-50 border border-zinc-200 text-zinc-700 grid place-items-center text-[14px]"}, "✦"),
+                React.createElement("span", {className:"text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded-full bg-zinc-50 border border-zinc-100 text-zinc-500"}, "Saved")
+              ),
+              React.createElement("div", {className:"mt-3 md:mt-4 flex items-baseline gap-2"},
+                React.createElement("span", {className:"serif text-[22px] md:text-[28px] font-bold tracking-tight leading-none"}, `${totals.rate.toFixed(0)}%`),
+                React.createElement("span", {className:"text-[11px] md:text-[12px] text-zinc-500"}, "rate")
+              ),
+              React.createElement("div", {className:"mt-2 text-[11px] md:text-[12px] text-zinc-500 leading-snug line-clamp-2"}, totals.inc>0?`Rs ${totals.inc.toLocaleString()} in, Rs ${totals.exp.toLocaleString()} out`:"Add income to track")
+            )
+          )
+        ),
+
+        // CHARTS
+        React.createElement("section", {className:"mt-3 md:mt-5 grid grid-cols-1 lg:grid-cols-5 gap-3 md:gap-4"},
+          React.createElement("div", {className:"lg:col-span-3 rounded-[16px] md:rounded-[20px] bg-white border border-zinc-200/70 shadow-[0_2px_20px_-12px_rgba(0,0,0,0.06)] p-4 md:p-6"},
+            React.createElement("div", {className:"flex items-center justify-between mb-4 md:mb-5"},
+              React.createElement("h3", {className:"serif text-[15px] md:text-[16px] font-semibold"}, "Last 6 months"),
+              React.createElement("div", {className:"flex items-center gap-3 text-[11px]"},
+                React.createElement("span", {className:"flex items-center gap-1.5"}, React.createElement("span", {className:"w-2 h-2 rounded-full bg-zinc-900"}), "Expense"),
+                React.createElement("span", {className:"flex items-center gap-1.5"}, React.createElement("span", {className:"w-2 h-2 rounded-full bg-emerald-500"}), "Income")
+              )
+            ),
+            React.createElement("div", {className:"flex items-end gap-2 md:gap-3 h-[120px] md:h-[160px]"},
+              chart.map((d,i)=>
+                React.createElement("div", {key:d.key, className:"flex-1 flex flex-col items-center gap-1.5 md:gap-2 min-w-0"},
+                  React.createElement("div", {className:"w-full flex gap-1 md:gap-1.5 items-end justify-center h-[88px] md:h-[120px]"},
+                    React.createElement("div", {className:"flex-1 max-w-[22px] md:max-w-[28px] bg-emerald-500/80 rounded-full md:rounded-[10px] rounded-b-[6px] transition-all hover:bg-emerald-500", style:{height:`${(d.inc/maxChart)*100}%`, minHeight: d.inc>0?"6px":"2px"}}),
+                    React.createElement("div", {className:"flex-1 max-w-[22px] md:max-w-[28px] bg-zinc-900 rounded-full md:rounded-[10px] rounded-b-[6px] transition-all hover:bg-black", style:{height:`${(d.exp/maxChart)*100}%`, minHeight: d.exp>0?"6px":"2px"}})
+                  ),
+                  React.createElement("span", {className:"text-[10px] md:text-[11px] font-medium text-zinc-500"}, d.label)
+                )
+              )
+            )
+          ),
+          React.createElement("div", {className:"lg:col-span-2 rounded-[16px] md:rounded-[20px] bg-white border border-zinc-200/70 shadow-[0_2px_20px_-12px_rgba(0,0,0,0.06)] p-4 md:p-6"},
+            React.createElement("h3", {className:"serif text-[15px] md:text-[16px] font-semibold mb-4"}, "Top expenses"),
+            byCat.length===0 ? React.createElement("div", {className:"py-10 text-center"},
+              React.createElement("div", {className:"text-[24px] mb-2"}, "📊"),
+              React.createElement("div", {className:"text-[13px] text-zinc-500"}, "No expenses yet")
+            ) : React.createElement("div", {className:"space-y-3.5"},
+              byCat.slice(0,4).map(item=>
+                React.createElement("div", {key:item.cat},
+                  React.createElement("div", {className:"flex justify-between items-center text-[12px] md:text-[13px]"},
+                    React.createElement("span", {className:"flex items-center gap-2 font-medium min-w-0"},
+                      React.createElement("span", {className:"w-6 h-6 rounded-full bg-zinc-50 border border-zinc-200 grid place-items-center text-[12px] shrink-0"}, CAT_ICON[item.cat]||"•"),
+                      React.createElement("span", {className:"truncate"}, item.cat)
+                    ),
+                    React.createElement("span", {className:"font-semibold mono ml-2 shrink-0"}, `Rs ${item.amt.toLocaleString()}`)
+                  ),
+                  React.createElement("div", {className:"mt-1.5 h-1.5 bg-zinc-100 rounded-full overflow-hidden"},
+                    React.createElement("div", {className:"h-full bg-zinc-900 rounded-full transition-all duration-500", style:{width:`${item.pct}%`}})
+                  )
+                )
+              )
+            )
+          )
+        ),
+
+        // TRANSACTIONS - Mobile optimized
+        React.createElement("section", {className:"mt-3 md:mt-5 rounded-[16px] md:rounded-[20px] bg-white border border-zinc-200/70 shadow-[0_2px_20px_-12px_rgba(0,0,0,0.06)] overflow-hidden"},
+          React.createElement("div", {className:"p-4 md:px-6 md:py-5 border-b border-zinc-100"},
+            React.createElement("div", {className:"flex flex-col gap-3"},
+              React.createElement("div", {className:"flex items-center justify-between"},
+                React.createElement("div", {className:"flex items-center gap-2.5"},
+                  React.createElement("h2", {className:"serif text-[16px] md:text-[17px] font-semibold"}, "Transactions"),
+                  React.createElement("span", {className:"text-[11px] font-medium px-2 py-0.5 rounded-full bg-zinc-900 text-white"}, `${filtered.length}`)
+                ),
+                React.createElement("div", {className:"hidden md:flex items-center gap-2"},
+                  React.createElement("button", {onClick:exportCSV, className:"h-8 px-3 rounded-full bg-white border border-zinc-200 text-[12px] font-semibold hover:border-zinc-900"}, "CSV"),
+                  React.createElement("button", {onClick:exportJSON, className:"h-8 px-3 rounded-full bg-white border border-zinc-200 text-[12px] font-semibold hover:border-zinc-900"}, "JSON"),
+                  React.createElement("button", {onClick:clearAll, className:"h-8 px-3 rounded-full bg-white border border-zinc-200 text-zinc-500 text-[12px] font-medium hover:bg-red-50 hover:border-red-200 hover:text-red-600"}, "Clear")
+                )
+              ),
+              React.createElement("div", {className:"flex flex-col sm:flex-row gap-2.5"},
+                React.createElement("div", {className:"relative flex-1"},
+                  React.createElement("input", {value:search, onChange:e=>setSearch(e.target.value), placeholder:"Search notes, category, amount…", className:"h-[44px] w-full pl-10 pr-4 rounded-full bg-zinc-50 border border-zinc-200 text-[14px] outline-none focus:bg-white focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10"}),
+                  React.createElement("span", {className:"absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-400 text-[14px]"}, "⌕")
+                ),
+                React.createElement("div", {className:"flex gap-2 overflow-x-auto scrollbar-none pb-1 sm:pb-0"},
+                  React.createElement("div", {className:"flex rounded-full bg-zinc-100 p-1 border border-zinc-200 shrink-0"},
+                    ["all","income","expense"].map(t=>
+                      React.createElement("button", {key:t, onClick:()=>setFilterType(t), className:`h-[32px] px-3.5 rounded-full text-[12px] font-semibold capitalize transition whitespace-nowrap ${filterType===t ? "bg-white text-zinc-900 shadow-sm border border-zinc-200" : "text-zinc-500"}`}, t)
+                    )
+                  ),
+                  React.createElement("select", {value:filterMonth, onChange:e=>setFilterMonth(e.target.value), className:"h-[40px] rounded-full bg-zinc-50 border border-zinc-200 px-3.5 text-[13px] font-medium outline-none focus:bg-white focus:border-zinc-900 shrink-0"},
+                    React.createElement("option", {value:"all"}, "All months"),
+                    months.map(m=> React.createElement("option", {key:m, value:m}, m))
+                  )
+                )
+              )
+            )
+          ),
+          React.createElement("div", {className:"divide-y divide-zinc-100"},
+            sync==="syncing" && txs.length===0 ? React.createElement("div", {className:"py-16 text-center"},
+              React.createElement("div", {className:"w-8 h-8 border-2 border-zinc-200 border-t-zinc-900 rounded-full animate-spin mx-auto mb-3"}),
+              React.createElement("div", {className:"text-[13px] text-zinc-500"}, "Syncing…")
+            ) :
+            filtered.length===0 ? React.createElement("div", {className:"py-16 text-center px-6"},
+              React.createElement("div", {className:"w-12 h-12 mx-auto rounded-[12px] bg-zinc-900 text-white grid place-items-center mb-3"}, "₨"),
+              React.createElement("h3", {className:"serif text-[16px] font-semibold"}, "No transactions"),
+              React.createElement("p", {className:"text-[13px] text-zinc-500 mt-1 max-w-[260px] mx-auto"}, search||filterType!=="all"||filterMonth!=="all" ? "No results for current filters" : "Add your first income or expense to get started"),
+              React.createElement("button", {onClick:openAdd, className:"mt-4 h-10 px-5 rounded-full bg-zinc-900 text-white text-[13px] font-semibold"}, "Add transaction")
+            ) :
+            filtered.map(t=>
+              React.createElement("div", {key:t.id, className:"group flex items-center gap-3 px-4 py-3.5 md:px-6 md:py-4 hover:bg-zinc-50/70 active:bg-zinc-50 transition-colors"},
+                React.createElement("div", {className:`w-10 h-10 md:w-10 md:h-10 rounded-full border grid place-items-center shrink-0 text-[15px] ${t.type==="income"?"bg-zinc-900 border-zinc-900 text-white":"bg-white border-zinc-200 text-zinc-700"}`}, CAT_ICON[t.category]||"•"),
+                React.createElement("div", {className:"min-w-0 flex-1", onClick:()=>openEdit(t)},
+                  React.createElement("div", {className:"flex items-center gap-1.5 flex-wrap"},
+                    React.createElement("span", {className:"text-[14px] font-semibold truncate max-w-[110px] sm:max-w-none"}, t.category),
+                    React.createElement("span", {className:`text-[10px] px-1.5 py-0.5 rounded-full border font-bold uppercase shrink-0 ${t.type==="income"?"bg-emerald-50 border-emerald-200 text-emerald-700":"bg-white border-zinc-200 text-zinc-500"}`}, t.type),
+                    React.createElement("span", {className:"text-[11px] text-zinc-400 mono hidden sm:inline"}, t.date)
+                  ),
+                  React.createElement("div", {className:"flex items-center gap-2 mt-0.5"},
+                    React.createElement("span", {className:"text-[11px] text-zinc-400 mono sm:hidden"}, t.date),
+                    React.createElement("span", {className:"text-[13px] text-zinc-600 truncate"}, t.note||React.createElement("span", {className:"text-zinc-400 italic"}, "No note"))
+                  )
+                ),
+                React.createElement("div", {className:"text-right shrink-0 ml-2"},
+                  React.createElement("div", {className:`serif text-[14px] md:text-[15px] font-bold leading-none ${t.type==="income"?"text-zinc-900":"text-zinc-700"}`}, `${t.type==="income"?"+":"-"} Rs ${t.amount.toLocaleString("en-PK")}`),
+                  React.createElement("div", {className:"flex items-center gap-1 justify-end mt-2 md:opacity-0 md:group-hover:opacity-100 opacity-100 transition-opacity"},
+                    React.createElement("button", {onClick:()=>openEdit(t), className:"w-7 h-7 md:w-8 md:h-8 rounded-full bg-white border border-zinc-200 grid place-items-center text-zinc-600 hover:border-zinc-900 hover:text-zinc-900 shadow-sm active:scale-95 transition-transform", title:"Edit"}, "✎"),
+                    React.createElement("button", {onClick:()=>handleDelete(t.id), className:"w-7 h-7 md:w-8 md:h-8 rounded-full bg-white border border-zinc-200 grid place-items-center text-zinc-400 hover:border-red-300 hover:text-red-600 shadow-sm active:scale-95 transition-transform", title:"Delete"}, "✕")
+                  )
+                )
+              )
+            )
+          ),
+          filtered.length>0 && React.createElement("div", {className:"p-3 md:p-4 bg-[#fcfaf8] border-t border-zinc-100 flex items-center justify-between md:hidden"},
+            React.createElement("span", {className:"text-[12px] text-zinc-500"}, `${filtered.length} transactions`),
+            React.createElement("button", {onClick:clearAll, className:"text-[12px] font-medium text-zinc-500 hover:text-red-600"}, "Clear all")
+          )
+        )
+      ),
+
+      // FAB - Mobile only
+      React.createElement("button", {onClick:openAdd, className:"md:hidden fixed bottom-5 right-4 w-14 h-14 rounded-full bg-zinc-900 text-white shadow-[0_8px_24px_rgba(0,0,0,0.25),0_2px_8px_rgba(0,0,0,0.15)] grid place-items-center text-[26px] z-20 active:scale-[0.96] transition-transform"},
+        "+"
+      ),
+
+      // Transaction Modal - Bottom sheet on mobile
+      isOpen && React.createElement("div", {className:"fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4"},
+        React.createElement("div", {className:"absolute inset-0 bg-zinc-900/40 backdrop-blur-[3px]", onClick:()=>setIsOpen(false)}),
+        React.createElement("div", {className:"relative w-full md:max-w-[420px] bg-white rounded-t-[24px] md:rounded-[20px] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.4)] border border-zinc-200 overflow-hidden bottom-sheet-anim md:modal-anim max-h-[92vh] flex flex-col"},
+          React.createElement("div", {className:"md:hidden w-9 h-1.5 rounded-full bg-zinc-300 mx-auto mt-3 mb-1 shrink-0"}),
+          React.createElement("div", {className:"px-5 md:px-6 pt-3 md:pt-6 pb-4 flex items-start justify-between shrink-0"},
+            React.createElement("div", null,
+              React.createElement("h3", {className:"serif text-[18px] md:text-[20px] font-bold leading-none"}, editing?"Edit transaction":"New transaction"),
+              React.createElement("p", {className:"text-[12px] text-zinc-500 mt-1.5"}, "Syncs instantly across devices")
+            ),
+            React.createElement("button", {onClick:()=>setIsOpen(false), className:"w-8 h-8 rounded-full bg-zinc-100 grid place-items-center text-zinc-500 hover:bg-zinc-200 shrink-0"}, "✕")
+          ),
+          React.createElement("div", {className:"px-5 md:px-6 pb-6 space-y-4 overflow-y-auto overscroll-contain"},
+            React.createElement("div", {className:"grid grid-cols-2 gap-1.5 p-1 rounded-full bg-zinc-100 border border-zinc-200"},
+              React.createElement("button", {onClick:()=>{ setForm(f=>({...f, type:"expense", category:expenseCats[0]||"Other"})); }, className:`h-11 rounded-full text-[13px] font-semibold transition ${form.type==="expense"?"bg-zinc-900 text-white shadow-sm":"text-zinc-500 hover:text-zinc-900"}`}, "Expense"),
+              React.createElement("button", {onClick:()=>{ setForm(f=>({...f, type:"income", category:incomeCats[0]||"Other"})); }, className:`h-11 rounded-full text-[13px] font-semibold transition ${form.type==="income"?"bg-zinc-900 text-white shadow-sm":"text-zinc-500 hover:text-zinc-900"}`}, "Income")
+            ),
+            React.createElement("div", null,
+              React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-400 mb-2 block"}, "Amount"),
+              React.createElement("div", {className:"relative"},
+                React.createElement("span", {className:"absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 text-[14px] font-medium"}, "Rs"),
+                React.createElement("input", {type:"number", inputMode:"decimal", value:form.amount, onChange:e=>setForm(f=>({...f, amount:e.target.value})), placeholder:"0", className:"w-full h-[56px] rounded-[14px] bg-zinc-50 border border-zinc-200 pl-10 pr-4 text-[24px] font-bold serif outline-none focus:bg-white focus:border-zinc-900 focus:ring-4 focus:ring-zinc-900/10"})
+              )
+            ),
+            React.createElement("div", {className:"grid grid-cols-2 gap-3"},
+              React.createElement("div", null,
+                React.createElement("div", {className:"flex items-center justify-between mb-2"},
+                  React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-400 block"}, "Category"),
+                  React.createElement("button", {onClick:()=>{setCatTab(form.type); setShowCatManager(true);}, className:"text-[11px] font-semibold text-zinc-900 underline hover:text-black"}, "Edit")
+                ),
+                React.createElement("select", {value:form.category, onChange:e=>setForm(f=>({...f, category:e.target.value})), className:"w-full h-[48px] rounded-[12px] bg-zinc-50 border border-zinc-200 px-3 text-[13px] font-medium outline-none focus:bg-white focus:border-zinc-900"},
+                  (form.type==="income"?incomeCats:expenseCats).map(c=> React.createElement("option", {key:c, value:c}, c))
+                )
+              ),
+              React.createElement("div", null,
+                React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-400 mb-2 block"}, "Date"),
+                React.createElement("input", {type:"date", value:form.date, onChange:e=>setForm(f=>({...f, date:e.target.value})), className:"w-full h-[48px] rounded-[12px] bg-zinc-50 border border-zinc-200 px-3 text-[13px] font-medium outline-none focus:bg-white focus:border-zinc-900"})
+              )
+            ),
+            React.createElement("div", null,
+              React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-400 mb-2 block"}, "Note"),
+              React.createElement("input", {value:form.note, onChange:e=>setForm(f=>({...f, note:e.target.value})), placeholder:"e.g. Groceries, rent", className:"w-full h-[48px] rounded-[12px] bg-zinc-50 border border-zinc-200 px-3.5 text-[14px] outline-none focus:bg-white focus:border-zinc-900"})
+            ),
+            React.createElement("div", {className:"flex gap-2.5 pt-1 pb-[env(safe-area-inset-bottom)]"},
+              React.createElement("button", {onClick:()=>setIsOpen(false), className:"flex-1 h-12 rounded-full bg-zinc-100 border border-zinc-200 text-[13px] font-semibold hover:bg-zinc-200 active:scale-[0.98] transition-transform"}, "Cancel"),
+              React.createElement("button", {onClick:handleSave, className:"flex-1 h-12 rounded-full bg-zinc-900 text-white text-[13px] font-semibold shadow-[0_4px_16px_rgba(0,0,0,0.15)] hover:bg-black active:scale-[0.98] transition-transform"}, editing?"Update":"Save")
+            )
+          )
+        )
+      ),
+
+      // Limit Modal
+      showLimit && React.createElement("div", {className:"fixed inset-0 z-[60] flex items-end md:items-center justify-center p-0 md:p-4"},
+        React.createElement("div", {className:"absolute inset-0 bg-zinc-900/50 backdrop-blur-[3px]", onClick:()=>setShowLimit(false)}),
+        React.createElement("div", {className:"relative w-full md:max-w-[380px] bg-white rounded-t-[24px] md:rounded-[20px] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.5)] border border-zinc-200 overflow-hidden bottom-sheet-anim md:modal-anim"},
+          React.createElement("div", {className:"md:hidden w-9 h-1.5 rounded-full bg-zinc-300 mx-auto mt-3 shrink-0"}),
+          React.createElement("div", {className:"px-6 pt-4 md:pt-7 pb-6"},
+            React.createElement("div", {className:"w-11 h-11 rounded-full bg-zinc-900 text-white grid place-items-center mb-4"}, "◐"),
+            React.createElement("h3", {className:"serif text-[20px] font-bold leading-tight"}, "Budget limit"),
+            React.createElement("p", {className:"text-[13px] text-zinc-500 mt-1.5 leading-relaxed"}, "Get notified at 80% and when exceeded. Set 0 to remove."),
+            React.createElement("div", {className:"mt-6"},
+              React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-400 mb-2 block"}, "Limit amount"),
+              React.createElement("div", {className:"relative"},
+                React.createElement("span", {className:"absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 text-[13px]"}, "Rs"),
+                React.createElement("input", {type:"number", inputMode:"decimal", value:limitInput===0?"":limitInput, onChange:e=>setLimitInput(Number(e.target.value)||0), placeholder:"50000", className:"w-full h-[56px] rounded-[14px] bg-zinc-50 border border-zinc-200 pl-10 pr-4 text-[22px] font-bold serif outline-none focus:bg-white focus:border-zinc-900 focus:ring-4 focus:ring-zinc-900/10"})
+              )
+            ),
+            React.createElement("div", {className:"flex gap-2.5 mt-6 pb-[env(safe-area-inset-bottom)]"},
+              React.createElement("button", {onClick:()=>setShowLimit(false), className:"flex-1 h-12 rounded-full bg-zinc-100 border border-zinc-200 text-[13px] font-semibold hover:bg-zinc-200 active:scale-[0.98] transition-transform"}, "Cancel"),
+              React.createElement("button", {onClick:saveLimit, className:"flex-1 h-12 rounded-full bg-zinc-900 text-white text-[13px] font-semibold hover:bg-black active:scale-[0.98] transition-transform"}, limitInput===0?"Remove":"Save")
+            )
+          )
+        )
+      ),
+
+      // Income Goal Modal
+      showIncomeGoal && React.createElement("div", {className:"fixed inset-0 z-[60] flex items-end md:items-center justify-center p-0 md:p-4"},
+        React.createElement("div", {className:"absolute inset-0 bg-zinc-900/50 backdrop-blur-[3px]", onClick:()=>setShowIncomeGoal(false)}),
+        React.createElement("div", {className:"relative w-full md:max-w-[380px] bg-white rounded-t-[24px] md:rounded-[20px] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.5)] border border-zinc-200 overflow-hidden bottom-sheet-anim md:modal-anim"},
+          React.createElement("div", {className:"md:hidden w-9 h-1.5 rounded-full bg-zinc-300 mx-auto mt-3 shrink-0"}),
+          React.createElement("div", {className:"px-6 pt-4 md:pt-7 pb-6"},
+            React.createElement("div", {className:"w-11 h-11 rounded-full bg-emerald-600 text-white grid place-items-center mb-4"}, "↗"),
+            React.createElement("h3", {className:"serif text-[20px] font-bold leading-tight"}, "Income goal"),
+            React.createElement("p", {className:"text-[13px] text-zinc-500 mt-1.5 leading-relaxed"}, "Set a target to motivate savings. Get notified at 80% and when achieved. Set 0 to remove."),
+            React.createElement("div", {className:"mt-6"},
+              React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-400 mb-2 block"}, "Goal amount"),
+              React.createElement("div", {className:"relative"},
+                React.createElement("span", {className:"absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 text-[13px]"}, "Rs"),
+                React.createElement("input", {type:"number", inputMode:"decimal", value:incomeGoalInput===0?"":incomeGoalInput, onChange:e=>setIncomeGoalInput(Number(e.target.value)||0), placeholder:"80000", className:"w-full h-[56px] rounded-[14px] bg-zinc-50 border border-zinc-200 pl-10 pr-4 text-[22px] font-bold serif outline-none focus:bg-white focus:border-zinc-900 focus:ring-4 focus:ring-zinc-900/10"})
+              )
+            ),
+            React.createElement("div", {className:"flex gap-2.5 mt-6 pb-[env(safe-area-inset-bottom)]"},
+              React.createElement("button", {onClick:()=>setShowIncomeGoal(false), className:"flex-1 h-12 rounded-full bg-zinc-100 border border-zinc-200 text-[13px] font-semibold hover:bg-zinc-200 active:scale-[0.98] transition-transform"}, "Cancel"),
+              React.createElement("button", {onClick:saveIncomeGoal, className:"flex-1 h-12 rounded-full bg-zinc-900 text-white text-[13px] font-semibold hover:bg-black active:scale-[0.98] transition-transform"}, incomeGoalInput===0?"Remove":"Save")
+            )
+          )
+        )
+      ),
+
+      // Category Manager Modal
+      showCatManager && React.createElement("div", {className:"fixed inset-0 z-[70] flex items-end md:items-center justify-center p-0 md:p-4"},
+        React.createElement("div", {className:"absolute inset-0 bg-zinc-900/50 backdrop-blur-[3px]", onClick:()=>setShowCatManager(false)}),
+        React.createElement("div", {className:"relative w-full md:max-w-[420px] bg-white rounded-t-[24px] md:rounded-[20px] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.5)] border border-zinc-200 overflow-hidden bottom-sheet-anim md:modal-anim max-h-[88vh] flex flex-col"},
+          React.createElement("div", {className:"md:hidden w-9 h-1.5 rounded-full bg-zinc-300 mx-auto mt-3 mb-1 shrink-0"}),
+          React.createElement("div", {className:"px-6 pt-2 md:pt-6 pb-4 border-b border-zinc-100 shrink-0"},
+            React.createElement("div", {className:"flex items-start justify-between"},
+              React.createElement("div", null,
+                React.createElement("h3", {className:"serif text-[18px] md:text-[20px] font-bold leading-none"}, "Manage categories"),
+                React.createElement("p", {className:"text-[12px] text-zinc-500 mt-1.5"}, "Add, rename or delete categories")
+              ),
+              React.createElement("button", {onClick:()=>setShowCatManager(false), className:"w-8 h-8 rounded-full bg-zinc-100 grid place-items-center text-zinc-500 hover:bg-zinc-200 shrink-0"}, "✕")
+            ),
+            React.createElement("div", {className:"mt-4 grid grid-cols-2 gap-1 p-1 rounded-full bg-zinc-100 border border-zinc-200"},
+              React.createElement("button", {onClick:()=>setCatTab("income"), className:`h-10 rounded-full text-[13px] font-semibold transition flex items-center justify-center gap-1.5 ${catTab==="income"?"bg-white text-zinc-900 shadow-sm border border-zinc-200":"text-zinc-500"}`},
+                "💰 Income", React.createElement("span", {className:"text-[11px] px-1.5 py-0.5 rounded-full bg-zinc-900 text-white"}, incomeCats.length)
+              ),
+              React.createElement("button", {onClick:()=>setCatTab("expense"), className:`h-10 rounded-full text-[13px] font-semibold transition flex items-center justify-center gap-1.5 ${catTab==="expense"?"bg-white text-zinc-900 shadow-sm border border-zinc-200":"text-zinc-500"}`},
+                "💸 Expense", React.createElement("span", {className:"text-[11px] px-1.5 py-0.5 rounded-full bg-zinc-200 text-zinc-600"}, expenseCats.length)
+              )
+            )
+          ),
+          React.createElement("div", {className:"flex-1 overflow-y-auto px-2 py-2 overscroll-contain"},
+            currentCatList.map(cat=>
+              React.createElement("div", {key:cat, className:"group flex items-center gap-3 px-4 py-3.5 rounded-[12px] hover:bg-zinc-50 active:bg-zinc-50 transition"},
+                React.createElement("div", {className:"w-9 h-9 rounded-full bg-white border border-zinc-200 grid place-items-center text-[14px] shrink-0"}, CAT_ICON[cat]||cat[0].toUpperCase()),
+                React.createElement("div", {className:"flex-1 min-w-0"},
+                  React.createElement("div", {className:"text-[14px] font-medium truncate"}, cat),
+                  React.createElement("div", {className:"text-[11px] text-zinc-500"}, `${txs.filter(t=>t.category===cat && t.type===catTab).length} transactions`)
+                ),
+                cat!=="Other" && React.createElement("div", {className:"flex items-center gap-1.5"},
+                  React.createElement("button", {onClick:()=>handleRenameCat(cat), className:"w-8 h-8 rounded-full bg-white border border-zinc-200 grid place-items-center text-[13px] hover:border-zinc-900 hover:text-zinc-900 active:scale-95 transition-transform"}, "✎"),
+                  React.createElement("button", {onClick:()=>handleDeleteCat(cat), className:"w-8 h-8 rounded-full bg-white border border-zinc-200 grid place-items-center text-[13px] hover:border-red-200 hover:text-red-600 hover:bg-red-50 active:scale-95 transition-transform"}, "✕")
+                ),
+                cat==="Other" && React.createElement("span", {className:"text-[10px] px-2 py-1 rounded-full bg-zinc-100 border border-zinc-200 text-zinc-500 font-medium"}, "Default")
+              )
+            )
+          ),
+          React.createElement("div", {className:"p-4 border-t border-zinc-100 bg-zinc-50/50 shrink-0"},
+            React.createElement("div", {className:"flex gap-2"},
+              React.createElement("input", {value:newCatName, onChange:e=>setNewCatName(e.target.value), onKeyDown:e=>{ if(e.key==="Enter") handleAddCat(); }, placeholder: catTab==="income" ? "New income (e.g. Bonus)" : "New expense category", className:"flex-1 h-12 rounded-full bg-white border border-zinc-200 px-4 text-[14px] outline-none focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10"}),
+              React.createElement("button", {onClick:handleAddCat, className:"h-12 px-6 rounded-full bg-zinc-900 text-white text-[13px] font-semibold hover:bg-black shadow-sm active:scale-[0.98] transition-transform"}, "Add")
+            ),
+            React.createElement("div", {className:"flex items-center justify-between mt-3 pb-[env(safe-area-inset-bottom)]"},
+              React.createElement("button", {onClick:resetCats, className:"text-[11px] font-medium text-zinc-500 hover:text-zinc-900 underline"}, "Reset to default"),
+              React.createElement("span", {className:"text-[11px] text-zinc-400 hidden sm:inline"}, "Tap ✎ to rename")
+            )
+          )
+        )
+      ),
+
+      // Click outside to close more menu
+      showMoreMenu && React.createElement("div", {className:"fixed inset-0 z-10 md:hidden", onClick:()=>setShowMoreMenu(false)})
+    );
+  }
+
+  createRoot(document.getElementById("root")).render(React.createElement(App));
+  </script>
+</body>
+</html>
