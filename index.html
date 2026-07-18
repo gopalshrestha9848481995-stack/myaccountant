@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Accountant - Budget Limit</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *{font-family: Inter, system-ui, sans-serif}
+    .serif{font-family: Fraunces, serif}
+    @keyframes slideDown{from{transform:translate(-50%,-100%);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+    .toast-anim{animation:slideDown 0.3s ease-out}
+  </style>
+</head>
+<body class="bg-[#fbfaf8] text-zinc-900 selection:bg-zinc-900 selection:text-white">
+  <div id="root"></div>
+  
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+    }
+  }
+  </script>
+
+  <script type="module">
+  import React, { useState, useEffect, useMemo, useRef } from 'react';
+  import { createRoot } from 'react-dom/client';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBsFJQV30HLAZRd2OCzNmcYk_RyxxF2rb8",
+    authDomain: "my-accountant-c8a30.firebaseapp.com",
+    projectId: "my-accountant-c8a30",
+    storageBucket: "my-accountant-c8a30.firebasestorage.app",
+    messagingSenderId: "318335026866",
+    appId: "1:318335026866:web:5481712c8b5e2ddf9f2bab"
+  };
+
+  const EXPENSE_CATS = ["Food","Transport","Shopping","Bills","Health","Entertainment","Rent","Other"];
+  const INCOME_CATS = ["Salary","Freelance","Business","Investment","Other"];
+  const STORAGE_KEY = "pocket_ledger_final";
+  const LIMIT_KEY = "expense_limit_v2";
+
+  function App(){
+    const [transactions, setTransactions] = useState([]);
+    const [syncStatus, setSyncStatus] = useState("syncing");
+    const [search, setSearch] = useState("");
+    const [filterType, setFilterType] = useState("all");
+    const [filterMonth, setFilterMonth] = useState("all");
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingTx, setEditingTx] = useState(null);
+    const [form, setForm] = useState({amount:"", type:"expense", category:"Food", date:new Date().toISOString().slice(0,10), note:""});
+    
+    // NEW: Limit states
+    const [expenseLimit, setExpenseLimit] = useState(()=>{
+      try{ return Number(localStorage.getItem(LIMIT_KEY)) || 0 }catch{ return 0 }
+    });
+    const [showLimitModal, setShowLimitModal] = useState(false);
+    const [limitInput, setLimitInput] = useState(expenseLimit);
+    const [toast, setToast] = useState(null);
+
+    const firebaseRefs = useRef(null);
+    const unsubRef = useRef(null);
+
+    // Toast helper
+    const showToast = (message, type="info") => {
+      setToast({message, type});
+      setTimeout(()=> setToast(null), 4000);
+    };
+
+    // Load local
+    useEffect(()=>{
+      try{
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if(raw){
+          const parsed = JSON.parse(raw);
+          if(Array.isArray(parsed) && parsed.length>0) setTransactions(parsed);
+        }
+      }catch{}
+    },[]);
+
+    // Persist limit
+    useEffect(()=>{
+      localStorage.setItem(LIMIT_KEY, String(expenseLimit));
+      setLimitInput(expenseLimit);
+    },[expenseLimit]);
+
+    // Firebase init
+    useEffect(()=>{
+      let cancelled=false;
+      (async()=>{
+        try{
+          const isFile = typeof window!=="undefined" && window.location.protocol==="file:";
+          const isOffline = typeof navigator!=="undefined" && !navigator.onLine;
+          if(isFile || isOffline){ setSyncStatus("offline"); return; }
+          setSyncStatus("syncing");
+          const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+          const { getAuth, signInAnonymously } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js");
+          const { getFirestore, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, query, orderBy } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+          if(cancelled) return;
+          const app = initializeApp(firebaseConfig);
+          const auth = getAuth(app);
+          try{ await signInAnonymously(auth); }catch(e){ console.warn(e); }
+          const db = getFirestore(app);
+          firebaseRefs.current = {db, collection, addDoc, updateDoc, deleteDoc, doc, serverTimestamp};
+          const col = collection(db, "transactions");
+          const q = query(col, orderBy("date","desc"));
+          const unsub = onSnapshot(q, (snap)=>{
+            if(cancelled) return;
+            const data = snap.docs.map(d=>{ const v=d.data(); return {id:d.id, amount:Number(v.amount)||0, type:v.type||"expense", category:v.category||"Other", date:v.date||new Date().toISOString().slice(0,10), note:v.note||"", createdAt:v.createdAt}; });
+            data.sort((a,b)=> b.date>a.date?1:-1);
+            setTransactions(data);
+            setSyncStatus("synced");
+            try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }catch{}
+          }, (err)=>{ console.error(err); if(!cancelled) setSyncStatus("offline"); });
+          unsubRef.current = unsub;
+        }catch(err){
+          console.error("Firebase init failed", err);
+          if(!cancelled) setSyncStatus("offline");
+        }
+      })();
+      return ()=>{ cancelled=true; if(unsubRef.current) unsubRef.current(); };
+    },[]);
+
+    // Persist local when offline
+    useEffect(()=>{
+      if(syncStatus==="offline" || !firebaseRefs.current){
+        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions)); }catch{}
+      }
+    },[transactions, syncStatus]);
+
+    // Totals
+    const totals = useMemo(()=>{
+      const income = transactions.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+      const expense = transactions.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+      return {income, expense, balance:income-expense, rate: income>0?(income-expense)/income*100:0};
+    },[transactions]);
+
+    const limitProgress = expenseLimit>0 ? (totals.expense/expenseLimit)*100 : 0;
+    const remaining = expenseLimit - totals.expense;
+
+    // Last 6 months chart data
+    const chartData = useMemo(()=>{
+      const arr=[]; const now=new Date();
+      for(let i=5;i>=0;i--){
+        const d=new Date(now.getFullYear(), now.getMonth()-i, 1);
+        const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+        const label=d.toLocaleString("en-US",{month:"short"});
+        arr.push({key,label,income:0,expense:0});
+      }
+      transactions.forEach(t=>{
+        const k=t.date.slice(0,7);
+        const found=arr.find(a=>a.key===k);
+        if(found){ if(t.type==="income") found.income+=t.amount; else found.expense+=t.amount; }
+      });
+      return arr;
+    },[transactions]);
+
+    const maxChart = Math.max(1, ...chartData.map(d=>Math.max(d.income,d.expense)));
+
+    // Expense by category
+    const byCategory = useMemo(()=>{
+      const map={};
+      transactions.filter(t=>t.type==="expense").forEach(t=>{ map[t.category]=(map[t.category]||0)+t.amount; });
+      const total = Object.values(map).reduce((s,v)=>s+v,0);
+      return Object.entries(map).map(([cat,amt])=>({cat,amt,pct:total?amt/total*100:0})).sort((a,b)=>b.amt-a.amt);
+    },[transactions]);
+
+    const months = useMemo(()=>{
+      return Array.from(new Set(transactions.map(t=>t.date.slice(0,7)))).sort().reverse();
+    },[transactions]);
+
+    const filtered = useMemo(()=>{
+      return transactions.filter(t=>{
+        if(filterType!=="all" && t.type!==filterType) return false;
+        if(filterMonth!=="all" && !t.date.startsWith(filterMonth)) return false;
+        if(search){
+          const s=search.toLowerCase();
+          return t.note.toLowerCase().includes(s) || t.category.toLowerCase().includes(s) || String(t.amount).includes(s) || t.date.includes(s);
+        }
+        return true;
+      });
+    },[transactions, filterType, filterMonth, search]);
+
+    // Notify when limit just crossed
+    const prevExpenseRef = useRef(totals.expense);
+    useEffect(()=>{
+      if(expenseLimit>0){
+        const prev = prevExpenseRef.current;
+        if(prev < expenseLimit && totals.expense >= expenseLimit){
+          showToast(`🚨 Limit reached! You've spent Rs ${totals.expense.toLocaleString()} of Rs ${expenseLimit.toLocaleString()}`, "error");
+        } else if(prev < expenseLimit*0.8 && totals.expense >= expenseLimit*0.8 && totals.expense < expenseLimit){
+          showToast(`⚠️ 80% of budget used - Rs ${totals.expense.toLocaleString()} / Rs ${expenseLimit.toLocaleString()}`, "warning");
+        }
+      }
+      prevExpenseRef.current = totals.expense;
+    },[totals.expense, expenseLimit]);
+
+    const openAdd = ()=>{
+      setEditingTx(null);
+      setForm({amount:"", type:"expense", category:"Food", date:new Date().toISOString().slice(0,10), note:""});
+      setIsModalOpen(true);
+    };
+    const openEdit = (tx)=>{
+      setEditingTx(tx);
+      setForm({amount:tx.amount, type:tx.type, category:tx.category, date:tx.date, note:tx.note});
+      setIsModalOpen(true);
+    };
+
+    const handleSave = async ()=>{
+      const amt = Number(form.amount);
+      if(!amt || amt<=0){ alert("Enter a valid amount"); return; }
+
+      // LIMIT CHECK
+      if(form.type==="expense" && expenseLimit>0){
+        let projected = totals.expense;
+        if(editingTx && editingTx.type==="expense") projected -= editingTx.amount;
+        // if editing from income to expense, we don't subtract income
+        projected += amt;
+        
+        if(projected > expenseLimit){
+          const overBy = projected - expenseLimit;
+          showToast(`🚨 Limit exceeded! Over by Rs ${overBy.toLocaleString()}`, "error");
+          const confirmMsg = `BUDGET LIMIT WARNING
+
+Limit: Rs ${expenseLimit.toLocaleString()}
+Current: Rs ${totals.expense.toLocaleString()}
+After this: Rs ${projected.toLocaleString()}
+Over by: Rs ${overBy.toLocaleString()}
+
+Do you still want to add this expense?`;
+          if(!confirm(confirmMsg)) return;
+        } else if(projected >= expenseLimit*0.8){
+          showToast(`⚠️ Approaching limit - ${((projected/expenseLimit)*100).toFixed(0)}% used`, "warning");
+        }
+      }
+
+      const fb = firebaseRefs.current;
+      try{
+        if(fb && syncStatus!=="offline"){
+          if(editingTx){
+            const ref = fb.doc(fb.db, "transactions", editingTx.id);
+            await fb.updateDoc(ref, {amount:amt, type:form.type, category:form.category, date:form.date, note:form.note});
+          }else{
+            await fb.addDoc(fb.collection(fb.db, "transactions"), {amount:amt, type:form.type, category:form.category, date:form.date, note:form.note, createdAt:fb.serverTimestamp()});
+          }
+        }else{
+          if(editingTx){
+            setTransactions(prev=> prev.map(t=> t.id===editingTx.id ? {...t, ...form, amount:amt} : t));
+          }else{
+            const newTx = {id:Date.now().toString(), amount:amt, type:form.type, category:form.category, date:form.date, note:form.note};
+            setTransactions(prev=> [newTx, ...prev]);
+          }
+        }
+        setIsModalOpen(false);
+        setEditingTx(null);
+        showToast(editingTx ? "Transaction updated" : "Transaction added", "success");
+      }catch(e){
+        console.error(e);
+        showToast("Saved locally (cloud failed)", "warning");
+        if(editingTx){
+          setTransactions(prev=> prev.map(t=> t.id===editingTx.id ? {...t, ...form, amount:amt} : t));
+        }else{
+          setTransactions(prev=> [{id:Date.now().toString(), amount:amt, type:form.type, category:form.category, date:form.date, note:form.note}, ...prev]);
+        }
+        setIsModalOpen(false);
+      }
+    };
+
+    const handleDelete = async (id)=>{
+      if(!confirm("Delete this transaction?")) return;
+      const fb = firebaseRefs.current;
+      try{
+        if(fb && syncStatus!=="offline"){
+          await fb.deleteDoc(fb.doc(fb.db, "transactions", id));
+        }else{
+          setTransactions(prev=> prev.filter(t=>t.id!==id));
+        }
+        showToast("Deleted", "info");
+      }catch(e){
+        console.error(e);
+        setTransactions(prev=> prev.filter(t=>t.id!==id));
+      }
+    };
+
+    const addSample = async ()=>{
+      const samples = [
+        {amount:85000,type:"income",category:"Salary",date:new Date(Date.now()-172800000).toISOString().slice(0,10),note:"Monthly salary"},
+        {amount:12000,type:"expense",category:"Rent",date:new Date(Date.now()-259200000).toISOString().slice(0,10),note:"Apartment rent"},
+        {amount:2500,type:"expense",category:"Food",date:new Date(Date.now()-345600000).toISOString().slice(0,10),note:"Groceries"},
+        {amount:1800,type:"expense",category:"Transport",date:new Date(Date.now()-432000000).toISOString().slice(0,10),note:"Fuel"},
+        {amount:15000,type:"income",category:"Freelance",date:new Date(Date.now()-864000000).toISOString().slice(0,10),note:"Website project"},
+      ];
+      const fb = firebaseRefs.current;
+      if(fb && syncStatus!=="offline"){
+        for(const s of samples){
+          try{ await fb.addDoc(fb.collection(fb.db,"transactions"), {...s, createdAt:fb.serverTimestamp()}); }catch{}
+        }
+      }else{
+        setTransactions(prev=> [...samples.map(s=>({...s,id:Math.random().toString(36).slice(2)})), ...prev]);
+      }
+      showToast("Sample data added", "success");
+    };
+
+    const exportCSV = ()=>{
+      const header=["id","type","amount","category","date","note"];
+      const rows=filtered.map(t=>[t.id,t.type,t.amount,t.category,t.date,`"${t.note.replace(/"/g,'""')}"`].join(","));
+      const csv=[header.join(","), ...rows].join("\n");
+      const blob=new Blob([csv],{type:"text/csv"}); const url=URL.createObjectURL(blob);
+      const a=document.createElement("a"); a.href=url; a.download=`my-accountant-${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url);
+    };
+    const exportJSON = ()=>{
+      const blob=new Blob([JSON.stringify(transactions,null,2)],{type:"application/json"}); const url=URL.createObjectURL(blob);
+      const a=document.createElement("a"); a.href=url; a.download=`my-accountant-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url);
+    };
+    const clearAll = async ()=>{
+      if(!confirm("Clear ALL transactions? This cannot be undone.")) return;
+      const fb=firebaseRefs.current;
+      if(fb && syncStatus!=="offline"){
+        for(const t of transactions){ try{ await fb.deleteDoc(fb.doc(fb.db,"transactions",t.id)); }catch{} }
+      }
+      setTransactions([]); localStorage.removeItem(STORAGE_KEY);
+      showToast("All cleared", "info");
+    };
+
+    const handleSaveLimit = ()=>{
+      const val = Number(limitInput);
+      if(val<0){ alert("Limit cannot be negative"); return; }
+      setExpenseLimit(val);
+      setShowLimitModal(false);
+      if(val>0) showToast(`Budget limit set to Rs ${val.toLocaleString()}`, "success");
+      else showToast("Budget limit removed", "info");
+    };
+
+    return (
+      React.createElement("div", {className:"min-h-screen"},
+        // Toast
+        toast && React.createElement("div", {className:`fixed top-4 left-1/2 -translate-x-1/2 z-[100] toast-anim px-5 py-3 rounded-full shadow-[0_8px_32px_-8px_rgba(0,0,0,0.3)] text-[13px] font-medium flex items-center gap-2 border ${toast.type==="error"?"bg-red-600 text-white border-red-700":toast.type==="warning"?"bg-amber-500 text-white border-amber-600":toast.type==="success"?"bg-zinc-900 text-white border-zinc-800":"bg-white text-zinc-900 border-zinc-200"}`}, toast.message),
+
+        // Top sync bar
+        React.createElement("div", {className:"w-full bg-zinc-900 text-white text-[13px] py-2.5 px-4 text-center"},
+          React.createElement("span", {className:"inline-flex items-center gap-2"},
+            React.createElement("span", {className:"inline-flex w-5 h-5 rounded-full bg-white/10 items-center justify-center"}, "☁"),
+            React.createElement("span", {className:"font-medium"}, "Auto-sync enabled"),
+            React.createElement("span", {className:"opacity-70 hidden sm:inline"}, "— Phone ↔ Laptop instantly — No login needed")
+          )
+        ),
+
+        // Header
+        React.createElement("header", {className:"sticky top-0 z-30 backdrop-blur-xl bg-[#fbfaf8]/80 border-b border-zinc-200/60"},
+          React.createElement("div", {className:"max-w-[1180px] mx-auto px-4 md:px-6 h-[64px] flex items-center justify-between"},
+            React.createElement("div", {className:"flex items-center gap-3"},
+              React.createElement("div", {className:"w-9 h-9 rounded-xl bg-zinc-900 text-white grid place-items-center shadow-sm"}, "₨"),
+              React.createElement("div", null,
+                React.createElement("h1", {className:"serif text-[22px] leading-none tracking-tight font-bold"}, "My Accountant"),
+                React.createElement("p", {className:"text-[11px] text-zinc-500 -mt-0.5 tracking-wide uppercase font-semibold"}, "Pocket Ledger • Auto Sync")
+              )
+            ),
+            React.createElement("div", {className:"flex items-center gap-2"},
+              React.createElement("div", {className:`hidden md:flex items-center gap-2 px-3 h-8 rounded-full border text-[12px] font-medium ${syncStatus==="synced"?"bg-emerald-50 border-emerald-200 text-emerald-700":syncStatus==="syncing"?"bg-amber-50 border-amber-200 text-amber-700":"bg-red-50 border-red-200 text-red-700"}`},
+                React.createElement("span", null, syncStatus==="synced"?"🟢":syncStatus==="syncing"?"🟡":"🔴"),
+                React.createElement("span", null, syncStatus==="synced"?"Synced":syncStatus==="syncing"?"Connecting...":"Offline")
+              ),
+              React.createElement("button", {onClick:()=>{setLimitInput(expenseLimit); setShowLimitModal(true);}, className:`h-9 px-4 rounded-full border text-[13px] font-semibold flex items-center gap-1.5 transition ${expenseLimit>0?"bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100":"bg-white border-zinc-200 hover:bg-zinc-50"}`},
+                "🎯 ", expenseLimit>0?`Limit: Rs ${expenseLimit.toLocaleString()}`:"Set Limit"
+              ),
+              React.createElement("button", {onClick:openAdd, className:"h-9 px-4 rounded-full bg-zinc-900 text-white text-[13px] font-semibold flex items-center gap-1.5 shadow-sm hover:bg-black transition"},
+                "+ ", React.createElement("span", {className:"hidden sm:inline"}, "Add Transaction")
+              )
+            )
+          )
+        ),
+
+        // Main
+        React.createElement("main", {className:"max-w-[1180px] mx-auto px-4 md:px-6 py-6 md:py-8"},
+          // Limit warning banner
+          expenseLimit>0 && totals.expense >= expenseLimit && React.createElement("div", {className:"mb-6 rounded-[16px] bg-red-50 border border-red-200 p-4 flex gap-3 items-start"},
+            React.createElement("div", {className:"w-8 h-8 rounded-full bg-red-500 text-white grid place-items-center shrink-0"}, "!"),
+            React.createElement("div", {className:"flex-1"},
+              React.createElement("div", {className:"text-[13px] font-bold text-red-800"}, "🚨 Expense limit exceeded!"),
+              React.createElement("div", {className:"text-[12px] text-red-700 mt-0.5"}, `You've spent Rs ${totals.expense.toLocaleString()} of Rs ${expenseLimit.toLocaleString()} limit. Over by Rs ${(totals.expense-expenseLimit).toLocaleString()}. You'll get notified for every new expense.`),
+              React.createElement("div", {className:"mt-2 h-2 bg-red-100 rounded-full overflow-hidden"},
+                React.createElement("div", {className:"h-full bg-red-500", style:{width:"100%"}})
+              )
+            ),
+            React.createElement("button", {onClick:()=>{setLimitInput(expenseLimit); setShowLimitModal(true);}, className:"text-[12px] font-semibold px-3 py-1.5 rounded-full bg-white border border-red-200 text-red-700 hover:bg-red-50"}, "Adjust")
+          ),
+
+          expenseLimit>0 && totals.expense >= expenseLimit*0.8 && totals.expense < expenseLimit && React.createElement("div", {className:"mb-6 rounded-[16px] bg-amber-50 border border-amber-200 p-3.5 flex items-center gap-3"},
+            React.createElement("span", null, "⚠️"),
+            React.createElement("div", {className:"text-[12px] text-amber-800 flex-1"}, React.createElement("b", null, "Approaching limit: "), `${limitProgress.toFixed(0)}% used — Rs ${totals.expense.toLocaleString()} / Rs ${expenseLimit.toLocaleString()}. ${remaining.toLocaleString()} left.`),
+            React.createElement("button", {onClick:()=>{setLimitInput(expenseLimit); setShowLimitModal(true);}, className:"text-[11px] font-bold px-2.5 py-1 rounded-full bg-white border border-amber-200"}, "Edit")
+          ),
+
+          // Stats grid
+          React.createElement("section", {className:"grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4"},
+            // Income
+            React.createElement("div", {className:"rounded-[20px] bg-white border border-zinc-200/70 p-4 md:p-5 shadow-[0_1px_0_0_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)]"},
+              React.createElement("div", {className:"flex items-center justify-between mb-3"},
+                React.createElement("span", {className:"text-[11px] font-semibold tracking-widest uppercase text-zinc-500"}, "Total Income"),
+                React.createElement("div", {className:"w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 grid place-items-center"}, "↗")
+              ),
+              React.createElement("div", {className:"serif text-[26px] md:text-[30px] leading-none font-bold text-emerald-600"}, `Rs. ${totals.income.toLocaleString("en-PK")}`),
+              React.createElement("div", {className:"mt-2 text-[12px] text-zinc-500"}, `${transactions.filter(t=>t.type==="income").length} records`)
+            ),
+            // Expense with limit
+            React.createElement("div", {className:`rounded-[20px] bg-white border p-4 md:p-5 shadow-[0_1px_0_0_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)] ${expenseLimit>0 && totals.expense>=expenseLimit ? "border-red-200 bg-red-50/30" : "border-zinc-200/70"}`},
+              React.createElement("div", {className:"flex items-center justify-between mb-3"},
+                React.createElement("span", {className:"text-[11px] font-semibold tracking-widest uppercase text-zinc-500"}, "Total Expense"),
+                React.createElement("div", {className:`w-7 h-7 rounded-full grid place-items-center ${expenseLimit>0 && totals.expense>=expenseLimit ? "bg-red-100 text-red-600" : "bg-red-50 text-red-600"}`}, "↘")
+              ),
+              React.createElement("div", {className:"serif text-[26px] md:text-[30px] leading-none font-bold text-red-600"}, `Rs. ${totals.expense.toLocaleString("en-PK")}`),
+              expenseLimit>0 ? React.createElement("div", {className:"mt-3"},
+                React.createElement("div", {className:"flex justify-between text-[11px] font-medium"},
+                  React.createElement("span", {className:"text-zinc-500"}, `Limit Rs ${expenseLimit.toLocaleString()}`),
+                  React.createElement("span", {className: limitProgress>=100 ? "text-red-600 font-bold" : limitProgress>=80 ? "text-amber-600 font-bold" : "text-zinc-600"}, `${limitProgress.toFixed(0)}%`)
+                ),
+                React.createElement("div", {className:"mt-1.5 h-2 w-full bg-zinc-100 rounded-full overflow-hidden"},
+                  React.createElement("div", {className:`h-full rounded-full transition-all ${limitProgress>=100?"bg-red-500":limitProgress>=80?"bg-amber-500":"bg-zinc-900"}`, style:{width:`${Math.min(100,limitProgress)}%`}})
+                ),
+                React.createElement("div", {className:`mt-1.5 text-[11px] ${remaining>=0?"text-zinc-500":"text-red-600 font-semibold"}`}, remaining>=0 ? `${remaining.toLocaleString()} remaining` : `Over by Rs ${Math.abs(remaining).toLocaleString()}`)
+              ) : React.createElement("div", {className:"mt-2 text-[12px] text-zinc-500"}, 
+                React.createElement("button", {onClick:()=>setShowLimitModal(true), className:"text-[11px] font-semibold underline hover:text-zinc-900"}, "Set expense limit →"),
+                ` • ${transactions.filter(t=>t.type==="expense").length} records`
+              )
+            ),
+            // Balance
+            React.createElement("div", {className:"rounded-[20px] bg-zinc-900 text-white p-4 md:p-5 shadow-[0_1px_0_0_rgba(0,0,0,0.1),0_12px_32px_-12px_rgba(0,0,0,0.4)]"},
+              React.createElement("div", {className:"flex items-center justify-between mb-3"},
+                React.createElement("span", {className:"text-[11px] font-semibold tracking-widest uppercase text-white/60"}, "Balance"),
+                React.createElement("div", {className:"w-7 h-7 rounded-full bg-white/10 grid place-items-center"}, "◑")
+              ),
+              React.createElement("div", {className:"serif text-[26px] md:text-[30px] leading-none font-bold"}, `Rs. ${totals.balance.toLocaleString("en-PK")}`),
+              React.createElement("div", {className:"mt-2 text-[12px] text-white/60"}, totals.balance>=0?"You are saving":"Over budget")
+            ),
+            // Savings rate
+            React.createElement("div", {className:"rounded-[20px] bg-white border border-zinc-200/70 p-4 md:p-5 shadow-[0_1px_0_0_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)]"},
+              React.createElement("div", {className:"flex items-center justify-between mb-3"},
+                React.createElement("span", {className:"text-[11px] font-semibold tracking-widest uppercase text-zinc-500"}, "Savings Rate"),
+                React.createElement("div", {className:"w-7 h-7 rounded-full bg-blue-50 text-blue-600 grid place-items-center"}, "♡")
+              ),
+              React.createElement("div", {className:"serif text-[26px] md:text-[30px] leading-none font-bold text-blue-600"}, `${totals.rate.toFixed(1)}%`),
+              React.createElement("div", {className:"mt-3 h-1.5 w-full bg-zinc-100 rounded-full overflow-hidden"},
+                React.createElement("div", {className:"h-full bg-blue-600 rounded-full transition-all", style:{width:`${Math.max(0,Math.min(100,totals.rate))}%`}})
+              )
+            )
+          ),
+
+          // Charts
+          React.createElement("section", {className:"grid lg:grid-cols-[1.6fr_1fr] gap-4 md:gap-5 mt-6 md:mt-8"},
+            React.createElement("div", {className:"rounded-[22px] bg-white border border-zinc-200/70 p-5 md:p-6 shadow-[0_1px_0_0_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)]"},
+              React.createElement("div", {className:"flex items-center justify-between mb-5"},
+                React.createElement("h2", {className:"serif text-[18px] font-bold"}, "Last 6 Months"),
+                React.createElement("div", {className:"flex items-center gap-3 text-[11px] font-medium"},
+                  React.createElement("span", {className:"inline-flex items-center gap-1.5"}, React.createElement("span", {className:"w-2.5 h-2.5 rounded-full bg-emerald-500"}), " Income"),
+                  React.createElement("span", {className:"inline-flex items-center gap-1.5"}, React.createElement("span", {className:"w-2.5 h-2.5 rounded-full bg-red-500"}), " Expense")
+                )
+              ),
+              React.createElement("div", {className:"h-[180px] md:h-[200px] flex items-end gap-2 md:gap-3"},
+                chartData.map(d=>{
+                  const incPct = d.income/maxChart*100;
+                  const expPct = d.expense/maxChart*100;
+                  return React.createElement("div", {key:d.key, className:"flex-1 flex flex-col items-center gap-2"},
+                    React.createElement("div", {className:"w-full flex gap-1.5 items-end justify-center h-[140px]"},
+                      React.createElement("div", {className:"flex-1 bg-emerald-500/90 rounded-t-[8px] hover:bg-emerald-500 transition-all", style:{height:`${Math.max(4,incPct)}%`, minHeight:d.income?8:4}, title:`Income ${d.income}`}),
+                      React.createElement("div", {className:"flex-1 bg-red-500/90 rounded-t-[8px] hover:bg-red-500 transition-all", style:{height:`${Math.max(4,expPct)}%`, minHeight:d.expense?8:4}, title:`Expense ${d.expense}`})
+                    ),
+                    React.createElement("span", {className:"text-[11px] font-semibold text-zinc-500"}, d.label)
+                  );
+                })
+              )
+            ),
+            React.createElement("div", {className:"rounded-[22px] bg-white border border-zinc-200/70 p-5 md:p-6 shadow-[0_1px_0_0_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)]"},
+              React.createElement("div", {className:"flex items-center justify-between mb-5"},
+                React.createElement("h2", {className:"serif text-[18px] font-bold"}, "Expense by Category"),
+                React.createElement("span", {className:"text-[11px] px-2.5 py-1 rounded-full bg-zinc-900 text-white font-semibold"}, `${byCategory.length} cats`)
+              ),
+              byCategory.length===0 ? React.createElement("div", {className:"py-12 text-center text-[13px] text-zinc-500"}, "No expenses yet") :
+              React.createElement("div", {className:"space-y-3.5"},
+                byCategory.slice(0,8).map(item=>
+                  React.createElement("div", {key:item.cat},
+                    React.createElement("div", {className:"flex justify-between mb-1.5"},
+                      React.createElement("span", {className:"text-[13px] font-medium"}, item.cat),
+                      React.createElement("span", {className:"text-[12px] font-semibold"}, `Rs. ${item.amt.toLocaleString()} • ${item.pct.toFixed(0)}%`)
+                    ),
+                    React.createElement("div", {className:"h-2 bg-zinc-100 rounded-full overflow-hidden"},
+                      React.createElement("div", {className:"h-full bg-zinc-900 rounded-full", style:{width:`${item.pct}%`}})
+                    )
+                  )
+                )
+              )
+            )
+          ),
+
+          // Transactions
+          React.createElement("section", {className:"mt-6 md:mt-8 rounded-[22px] bg-white border border-zinc-200/70 shadow-[0_1px_0_0_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)] overflow-hidden"},
+            React.createElement("div", {className:"p-4 md:p-5 border-b border-zinc-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3"},
+              React.createElement("div", {className:"flex items-center gap-3"},
+                React.createElement("h2", {className:"serif text-[18px] font-bold"}, "Transactions"),
+                React.createElement("span", {className:"text-[11px] px-2.5 py-1 rounded-full bg-zinc-100 border border-zinc-200 font-semibold"}, `${filtered.length} of ${transactions.length}`)
+              ),
+              React.createElement("div", {className:"flex flex-wrap items-center gap-2"},
+                React.createElement("div", {className:"relative"},
+                  React.createElement("span", {className:"absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-[12px]"}, "⌕"),
+                  React.createElement("input", {value:search, onChange:e=>setSearch(e.target.value), placeholder:"Search...", className:"h-9 w-[180px] md:w-[200px] pl-8 pr-3 rounded-full bg-zinc-50 border border-zinc-200 text-[13px] outline-none focus:border-zinc-900"})
+                ),
+                React.createElement("div", {className:"flex items-center rounded-full bg-zinc-100 p-1 border border-zinc-200"},
+                  ["all","income","expense"].map(t=>
+                    React.createElement("button", {key:t, onClick:()=>setFilterType(t), className:`h-7 px-3 rounded-full text-[12px] font-semibold capitalize ${filterType===t?"bg-zinc-900 text-white":"text-zinc-600"}`}, t)
+                  )
+                ),
+                React.createElement("select", {value:filterMonth, onChange:e=>setFilterMonth(e.target.value), className:"h-9 rounded-full bg-zinc-50 border border-zinc-200 px-3 text-[12px] font-medium"},
+                  React.createElement("option", {value:"all"}, "All months"),
+                  months.map(m=> React.createElement("option", {key:m, value:m}, m))
+                )
+              )
+            ),
+            React.createElement("div", {className:"px-4 md:px-5 py-3 bg-zinc-50/70 border-b border-zinc-100 flex flex-wrap gap-2"},
+              React.createElement("button", {onClick:addSample, className:"h-8 px-3 rounded-full bg-white border border-zinc-200 text-[12px] font-semibold hover:bg-zinc-50"}, "✨ Sample data"),
+              React.createElement("button", {onClick:exportCSV, className:"h-8 px-3 rounded-full bg-white border border-zinc-200 text-[12px] font-semibold hover:bg-zinc-50"}, "⬇ Export CSV"),
+              React.createElement("button", {onClick:exportJSON, className:"h-8 px-3 rounded-full bg-white border border-zinc-200 text-[12px] font-semibold hover:bg-zinc-50"}, "⬇ Export JSON"),
+              React.createElement("div", {className:"flex-1"}),
+              React.createElement("button", {onClick:clearAll, className:"h-8 px-3 rounded-full bg-red-50 border border-red-200 text-red-700 text-[12px] font-semibold hover:bg-red-100"}, "Clear all")
+            ),
+            React.createElement("div", {className:"divide-y divide-zinc-100"},
+              syncStatus==="syncing" && transactions.length===0 ? React.createElement("div", {className:"py-16 text-center text-[13px] text-zinc-500"}, "Connecting to cloud...") :
+              filtered.length===0 ? React.createElement("div", {className:"py-16 text-center"},
+                React.createElement("div", {className:"w-14 h-14 mx-auto rounded-2xl bg-zinc-900 text-white grid place-items-center mb-3"}, "₨"),
+                React.createElement("h3", {className:"serif text-[18px] font-bold"}, "No transactions yet"),
+                React.createElement("p", {className:"text-[13px] text-zinc-500"}, "Add your first transaction")
+              ) :
+              filtered.map(t=>
+                React.createElement("div", {key:t.id, className:"group flex items-center gap-3 md:gap-4 px-4 md:px-5 py-3.5 hover:bg-zinc-50/80 transition"},
+                  React.createElement("div", {className:`w-10 h-10 rounded-full grid place-items-center shrink-0 border ${t.type==="income"?"bg-emerald-50 border-emerald-200 text-emerald-700":"bg-red-50 border-red-200 text-red-700"}`}, t.type==="income"?"↗":"↘"),
+                  React.createElement("div", {className:"min-w-0 flex-1"},
+                    React.createElement("div", {className:"flex items-center gap-2 flex-wrap"},
+                      React.createElement("span", {className:"text-[14px] font-semibold truncate"}, t.category),
+                      React.createElement("span", {className:`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${t.type==="income"?"bg-emerald-50 border-emerald-200 text-emerald-700":"bg-red-50 border-red-200 text-red-700"}`}, t.type),
+                      React.createElement("span", {className:"text-[11px] text-zinc-500"}, t.date)
+                    ),
+                    React.createElement("div", {className:"text-[12px] text-zinc-600 truncate mt-0.5"}, t.note||"—")
+                  ),
+                  React.createElement("div", {className:`serif text-[15px] font-bold shrink-0 ${t.type==="income"?"text-emerald-600":"text-red-600"}`}, `${t.type==="income"?"+":"-"} Rs. ${t.amount.toLocaleString("en-PK")}`),
+                  React.createElement("div", {className:"flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition"},
+                    React.createElement("button", {onClick:()=>openEdit(t), className:"w-8 h-8 rounded-full bg-white border border-zinc-200 grid place-items-center hover:bg-zinc-900 hover:text-white"}, "✎"),
+                    React.createElement("button", {onClick:()=>handleDelete(t.id), className:"w-8 h-8 rounded-full bg-white border border-zinc-200 grid place-items-center hover:bg-red-600 hover:text-white"}, "🗑")
+                  )
+                )
+              )
+            )
+          ),
+
+          syncStatus==="offline" && React.createElement("div", {className:"mt-4 rounded-[16px] bg-amber-50 border border-amber-200 p-3.5 text-[12px] text-amber-800 flex gap-2"},
+            React.createElement("span", null, "⚠"),
+            React.createElement("div", null, React.createElement("b", null, "Offline mode:"), " Firebase not reachable. Data saved locally.")
+          )
+        ),
+
+        // Transaction Modal
+        isModalOpen && React.createElement("div", {className:"fixed inset-0 z-50 flex items-end md:items-center justify-center"},
+          React.createElement("div", {className:"absolute inset-0 bg-zinc-900/40 backdrop-blur-[2px]", onClick:()=>setIsModalOpen(false)}),
+          React.createElement("div", {className:"relative w-full md:max-w-[440px] bg-white rounded-t-[24px] md:rounded-[24px] shadow-[0_20px_60px_-20px_rgba(0,0,0,0.4)] border border-zinc-200 overflow-hidden max-h-[92vh] flex flex-col"},
+            React.createElement("div", {className:"px-6 pt-5 pb-4 flex items-center justify-between border-b border-zinc-100"},
+              React.createElement("div", null,
+                React.createElement("h3", {className:"serif text-[20px] font-bold leading-none"}, editingTx?"Edit Transaction":"Add Transaction"),
+                expenseLimit>0 && form.type==="expense" && React.createElement("p", {className:`text-[11px] mt-1 ${totals.expense>=expenseLimit?"text-red-600 font-bold":"text-zinc-500"}`}, totals.expense>=expenseLimit ? `🚨 Limit exceeded! ${expenseLimit.toLocaleString()} limit reached` : `Budget: Rs ${totals.expense.toLocaleString()} / Rs ${expenseLimit.toLocaleString()}`)
+              ),
+              React.createElement("button", {onClick:()=>setIsModalOpen(false), className:"w-8 h-8 rounded-full bg-zinc-100 grid place-items-center hover:bg-zinc-200"}, "✕")
+            ),
+            React.createElement("div", {className:"p-6 space-y-4 overflow-y-auto"},
+              React.createElement("div", {className:"grid grid-cols-2 gap-2 p-1 bg-zinc-100 rounded-full border border-zinc-200"},
+                React.createElement("button", {onClick:()=>setForm(f=>({...f, type:"expense", category:f.type==="expense"?f.category:"Food"})), className:`h-10 rounded-full text-[13px] font-semibold transition ${form.type==="expense"?"bg-zinc-900 text-white shadow":"text-zinc-600"}`}, "💸 Expense"),
+                React.createElement("button", {onClick:()=>setForm(f=>({...f, type:"income", category:f.type==="income"?f.category:"Salary"})), className:`h-10 rounded-full text-[13px] font-semibold transition ${form.type==="income"?"bg-emerald-600 text-white shadow":"text-zinc-600"}`}, "💰 Income")
+              ),
+              React.createElement("div", null,
+                React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-500 mb-1.5 block"}, "Amount (Rs.)"),
+                React.createElement("input", {type:"number", inputMode:"decimal", value:form.amount, onChange:e=>setForm(f=>({...f, amount:e.target.value})), placeholder:"0", className:"w-full h-[48px] rounded-[14px] bg-zinc-50 border border-zinc-200 px-4 text-[20px] font-bold serif outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900"})
+              ),
+              React.createElement("div", {className:"grid grid-cols-2 gap-3"},
+                React.createElement("div", null,
+                  React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-500 mb-1.5 block"}, "Category"),
+                  React.createElement("select", {value:form.category, onChange:e=>setForm(f=>({...f, category:e.target.value})), className:"w-full h-[44px] rounded-[12px] bg-zinc-50 border border-zinc-200 px-3 text-[13px] font-medium outline-none"},
+                    (form.type==="expense"?EXPENSE_CATS:INCOME_CATS).map(c=> React.createElement("option", {key:c, value:c}, c))
+                  )
+                ),
+                React.createElement("div", null,
+                  React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-500 mb-1.5 block"}, "Date"),
+                  React.createElement("input", {type:"date", value:form.date, onChange:e=>setForm(f=>({...f, date:e.target.value})), className:"w-full h-[44px] rounded-[12px] bg-zinc-50 border border-zinc-200 px-3 text-[13px] font-medium outline-none"})
+                )
+              ),
+              React.createElement("div", null,
+                React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-500 mb-1.5 block"}, "Note"),
+                React.createElement("input", {value:form.note, onChange:e=>setForm(f=>({...f, note:e.target.value})), placeholder:"e.g., Groceries, Salary...", className:"w-full h-[44px] rounded-[12px] bg-zinc-50 border border-zinc-200 px-3 text-[13px] outline-none focus:ring-2 focus:ring-zinc-900/10 focus:border-zinc-900"})
+              ),
+              React.createElement("div", {className:"flex gap-2 pt-2"},
+                React.createElement("button", {onClick:()=>setIsModalOpen(false), className:"flex-1 h-[44px] rounded-full bg-zinc-100 border border-zinc-200 text-[13px] font-semibold hover:bg-zinc-200"}, "Cancel"),
+                React.createElement("button", {onClick:handleSave, className:"flex-1 h-[44px] rounded-full bg-zinc-900 text-white text-[13px] font-semibold shadow hover:bg-black"}, editingTx?"Update":"Save Transaction")
+              ),
+              expenseLimit>0 && form.type==="expense" && React.createElement("p", {className:"text-[11px] text-center text-zinc-400"}, totals.expense>=expenseLimit ? "⚠️ You are over limit - you'll be warned on save" : `ℹ️ ${remaining.toLocaleString()} left in budget`)
+            )
+          )
+        ),
+
+        // Limit Modal - NEW
+        showLimitModal && React.createElement("div", {className:"fixed inset-0 z-[60] flex items-end md:items-center justify-center"},
+          React.createElement("div", {className:"absolute inset-0 bg-zinc-900/50 backdrop-blur-[2px]", onClick:()=>setShowLimitModal(false)}),
+          React.createElement("div", {className:"relative w-full md:max-w-[380px] bg-white rounded-t-[24px] md:rounded-[24px] shadow-[0_20px_60px_-20px_rgba(0,0,0,0.5)] border border-zinc-200 overflow-hidden"},
+            React.createElement("div", {className:"px-6 pt-6 pb-4"},
+              React.createElement("div", {className:"w-12 h-12 rounded-full bg-amber-100 text-amber-600 grid place-items-center mb-3 text-[20px]"}, "🎯"),
+              React.createElement("h3", {className:"serif text-[20px] font-bold"}, "Set Expense Limit"),
+              React.createElement("p", {className:"text-[13px] text-zinc-500 mt-1"}, "Get notified when you reach or exceed your budget. Set 0 to remove limit."),
+              
+              React.createElement("div", {className:"mt-5"},
+                React.createElement("label", {className:"text-[11px] font-bold tracking-widest uppercase text-zinc-500 mb-1.5 block"}, "Monthly Budget Limit (Rs.)"),
+                React.createElement("input", {type:"number", inputMode:"decimal", value:limitInput===0?"":limitInput, onChange:e=>setLimitInput(Number(e.target.value)||0), placeholder:"e.g., 50000", className:"w-full h-[52px] rounded-[14px] bg-zinc-50 border-2 border-zinc-200 px-4 text-[22px] font-bold serif outline-none focus:border-zinc-900 focus:bg-white transition"})
+              ),
+
+              expenseLimit>0 && React.createElement("div", {className:"mt-4 p-3 rounded-[12px] bg-zinc-50 border border-zinc-200"},
+                React.createElement("div", {className:"text-[11px] text-zinc-500 font-medium"}, "Current Status"),
+                React.createElement("div", {className:"flex justify-between mt-1 text-[13px]"},
+                  React.createElement("span", {className:"font-semibold"}, `Spent: Rs ${totals.expense.toLocaleString()}`),
+                  React.createElement("span", {className: totals.expense>=expenseLimit ? "text-red-600 font-bold" : "text-zinc-600"}, `${limitProgress.toFixed(0)}%`)
+                ),
+                React.createElement("div", {className:"mt-2 h-2 bg-zinc-200 rounded-full overflow-hidden"},
+                  React.createElement("div", {className:`h-full rounded-full ${limitProgress>=100?"bg-red-500":limitProgress>=80?"bg-amber-500":"bg-zinc-900"}`, style:{width:`${Math.min(100,limitProgress)}%`}})
+                )
+              ),
+
+              React.createElement("div", {className:"flex gap-2 mt-6"},
+                React.createElement("button", {onClick:()=>setShowLimitModal(false), className:"flex-1 h-[44px] rounded-full bg-zinc-100 border border-zinc-200 text-[13px] font-semibold hover:bg-zinc-200"}, "Cancel"),
+                React.createElement("button", {onClick:handleSaveLimit, className:"flex-1 h-[44px] rounded-full bg-zinc-900 text-white text-[13px] font-semibold shadow hover:bg-black"}, limitInput===0?"Remove Limit":"Save Limit")
+              ),
+
+              React.createElement("p", {className:"text-[11px] text-zinc-400 text-center mt-4"}, "💡 Tip: When you add an expense that exceeds this limit, you'll get a popup notification and a confirmation dialog.")
+            )
+          )
+        )
+      )
+    );
+  }
+
+  const root = createRoot(document.getElementById("root"));
+  root.render(React.createElement(App));
+  </script>
+</body>
+</html>
